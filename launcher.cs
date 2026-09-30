@@ -41,6 +41,15 @@ class LauncherForm : Form {
     static readonly string[] Keys = { "toggle", "start_stop", "reset", "category", "save_pos", "teleport" };
     static readonly string[] KeyTitles = { "Показать/скрыть оверлей", "Старт/финиш рана", "Сброс", "Сменить категорию", "Сохранить позицию", "Телепорт на позицию" };
     static readonly Keys[] KeyDefaults = { System.Windows.Forms.Keys.F6, System.Windows.Forms.Keys.F7, System.Windows.Forms.Keys.F8, System.Windows.Forms.Keys.F10, System.Windows.Forms.Keys.NumPad7, System.Windows.Forms.Keys.NumPad9 };
+    // Map file name (as the mod reads it) and display name, pairs.
+    static readonly string[] Missions = {
+        "trainyard", "Вокзал", "farm", "Укреплённая ферма", "caverns", "Пещеры", "church", "Церковь",
+        "tavern", "Пивная", "hospital", "Госпиталь", "cannery", "Консервный завод", "digsite", "Раскоп",
+        "airfield_east", "Аэродром — восток", "airfield_west", "Аэродром — запад", "castle", "Замок",
+        "castle_top", "Вершина замка", "zeppelin", "Цеппелин", "blacksun", "Чёрное Солнце",
+        "downtown", "Деловой центр", "downtown_radio", "Радиостанция", "downtown_west", "Запад делового центра",
+        "mte", "Исторический центр — восток", "mte_para_hq", "База исследований СС", "mte_ss_hq", "Штаб-квартира СС",
+        "mtw", "Исторический центр — запад", "mtw_off", "Квартира офицера", "mtw_ware", "Склад" };
     static readonly string[] Anchors = { "Левый верх", "Правый верх", "Левый низ", "Правый низ", "Центр" };
 
     string dir = AppDomain.CurrentDomain.BaseDirectory;
@@ -240,7 +249,12 @@ class LauncherForm : Form {
         AddCheck(t, "Всегда показывать часы", "general", "hours_always", 0);
         AddCheck(t, "Тень под текстом", "general", "shadow", 1);
         AddCheck(t, "Автостарт рана при загрузке стартовой карты", "general", "auto_start", 1);
-        AddText(t, "Стартовая карта (часть имени)", "general", "start_map", "trainyard");
+        var start = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
+        for (int i = 0; i < Missions.Length; i += 2) start.Items.Add(Missions[i + 1] + "  (" + Missions[i] + ")");
+        int cur = Array.IndexOf(Missions, Ini.Get("general", "start_map", "trainyard"));
+        start.SelectedIndex = cur >= 0 && cur % 2 == 0 ? cur / 2 : Array.IndexOf(Missions, "trainyard") / 2;
+        start.SelectedIndexChanged += delegate { Ini.Set("general", "start_map", Missions[start.SelectedIndex * 2]); };
+        AddRow(t, "Стартовая миссия", start); start.Width = 320;
         var font = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
         foreach (var fam in FontFamily.Families) font.Items.Add(fam.Name);
         font.SelectedItem = Ini.Get("general", "font", "Consolas");

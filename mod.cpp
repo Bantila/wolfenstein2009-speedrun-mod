@@ -274,7 +274,7 @@ static void Poll() {
                 }
                 // Entering the start map (from another map) resets and starts a new run.
                 if (g_set.autoStart && !g_set.startMap.empty() &&
-                    g_run.map.find(g_set.startMap) != std::string::npos) {
+                    _stricmp(g_run.map.c_str(), g_set.startMap.c_str()) == 0) {
                     g_run.Start(); g_run.mapClean = true;
                     Message("Run started");
                 }
