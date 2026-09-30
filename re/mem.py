@@ -14,3 +14,15 @@ class Proc:
         d = self.read(a, 4); return struct.unpack('<I', d)[0] if d else None
     def f3(self, a):
         d = self.read(a, 12); return struct.unpack('<3f', d) if d else None
+
+def modules(pid):
+    ps = ctypes.WinDLL('psapi')
+    h = k.OpenProcess(0x0410, False, pid)
+    arr = (ctypes.c_void_p * 1024)(); need = W.DWORD()
+    ps.EnumProcessModulesEx(h, arr, ctypes.sizeof(arr), ctypes.byref(need), 3)
+    out = {}
+    for m in arr[:need.value // ctypes.sizeof(ctypes.c_void_p)]:
+        name = ctypes.create_unicode_buffer(260)
+        ps.GetModuleBaseNameW(h, ctypes.c_void_p(m), name, 260)
+        out[name.value.lower()] = m
+    return out

@@ -172,7 +172,7 @@ static void WritePbSplits(const std::string& cat, const std::vector<Split>& v) {
 static void Message(const std::string& m) { g_msg = m; g_msgUntil = GetTickCount() + 2500; }
 
 // ---- Game memory -----------------------------------------------------------------------------
-struct Snapshot { bool loading, paused, player; float pos[3], vel[3], hp; char map[64]; };
+struct Snapshot { bool loading, paused, mission, cinematic, player; float pos[3], vel[3], hp; char map[64]; };
 static BYTE* g_session;
 
 static BYTE* FindSession() {
@@ -208,9 +208,10 @@ static void ReadGame(Snapshot* s, bool writeGod) {
         BYTE* gx = (BYTE*)GetModuleHandleA("Gamex86.dll");
         s->paused = g_binkOpen > 0;
         if (!gx || !g_supported) return;
-        s->paused |= gx[RVA_GAMELOCAL + GL_INCINEMATIC] != 0;
+        s->cinematic = gx[RVA_GAMELOCAL + GL_INCINEMATIC] != 0;
         BYTE* mc = *(BYTE**)(gx + RVA_MISSIONCOMPLETE);
-        if (mc) s->paused |= mc[MC_ACTIVE] != 0;
+        if (mc) s->mission = mc[MC_ACTIVE] != 0;
+        s->paused |= s->cinematic || s->mission;
         const char* m = *(const char**)(gx + RVA_GAMELOCAL + GL_MAPNAME);
         if (m) {
             const char* base = m;  // "maps/game/trainyard.map" -> "trainyard"
@@ -281,7 +282,7 @@ static void Poll() {
     bool keyDown[K_COUNT] = {};
     FILETIME iniTime = {};
     DWORD lastIniCheck = 0, loadEndTick = 0;
-    bool cheatsPending = false, wasLoading = false;
+    bool cheatsPending = false, wasLoading = false, wasMission = false, wasPaused = false;
     float savedPos[3] = {}; bool haveSaved = false;
 
     for (;;) {
@@ -312,6 +313,10 @@ static void Poll() {
 
             g_run.SetLoading(s.loading);
             g_run.paused = s.paused;
+            if (s.mission && !wasMission) g_run.MissionComplete();
+            if (s.paused != wasPaused)
+                Log("pause=%d (cinematic=%d mission=%d bink=%ld) map=%s", s.paused, s.cinematic, s.mission, g_binkOpen, s.map);
+            wasMission = s.mission; wasPaused = s.paused;
             g_run.Tick(dt);
             if (wasLoading && !s.loading) loadEndTick = GetTickCount();
             wasLoading = s.loading;
@@ -416,7 +421,7 @@ static std::string WidgetText(int id, const Settings& st) {
         snprintf(b, sizeof b, "X %.1f  Y %.1f  Z %.1f", g_pos[0], g_pos[1], g_pos[2]); return b;
     case W_SPEED: snprintf(b, sizeof b, "%.0f u/s (max %.0f)", g_speed, g_maxSpeed); return b;
     case W_RTA: return T(g_run.rta);
-    case W_IGT: return T(g_run.igt);
+    case W_IGT: return T(g_run.igt) + (g_run.loading ? " [load]" : g_run.paused ? " [paused]" : "");
     case W_MAP_RTA: return T(g_run.mapRta);
     case W_MAP_IGT: return T(g_run.mapIgt);
     case W_PB:

@@ -40,6 +40,16 @@ int main() {
     assert(r.rta == 8 && r.igt == 4 && r.loads == 1 && r.mapIgt == 0);
     r.Tick(1);
 
+    // Mission complete screen splits once; the next map load doesn't split again.
+    Run a; a.MapLoaded("menu", &m, &t); a.MapLoaded("trainyard", &m, &t); a.Start(); a.mapClean = true;
+    a.Tick(3); a.MissionComplete(); a.MissionComplete();
+    assert(a.splits.size() == 1 && a.splits[0].time == 3);
+    a.paused = true; a.Tick(4); a.paused = false;          // screen shown: IGT stopped
+    assert(a.MapLoaded("farm", &m, &t) && m == "trainyard");
+    assert(a.splits.size() == 1 && !a.splitDone);
+    assert(!a.MapLoaded("menu", &m, &t) || m != "menu");   // quitting to menu isn't a split...
+    assert(!a.MapLoaded("farm", &m, &t));                  // ...and menu is never PB-eligible
+
     r.Finish(); r.Tick(5);
     assert(r.rta == 9 && r.state == Run::Finished);
     assert(r.splits.size() == 3 && r.splits[2].map == "farm" && r.splits[2].seg == 1 && r.splits[2].time == 5);

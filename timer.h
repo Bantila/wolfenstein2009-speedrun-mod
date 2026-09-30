@@ -44,6 +44,7 @@ struct Run {
     bool loading = false;              // real loads: counted, excluded from IGT
     bool paused = false;               // cutscenes, mission complete screen: excluded from IGT
     std::vector<Split> splits;         // completed maps in this run
+    bool splitDone = false;            // current map already split (mission complete screen)
     bool alive = true;
 
     void Reset() { *this = Run{map}; }
@@ -51,8 +52,14 @@ struct Run {
     void Start() { Reset(); state = Running; }
     void Finish() {
         if (state != Running) return;
-        AddSplit(map);
+        if (!splitDone) AddSplit(map);
         state = Finished;
+    }
+    // Auto split when the mission complete screen appears; the following map load won't split again.
+    void MissionComplete() {
+        if (state != Running || splitDone || map == "menu") return;
+        AddSplit(map);
+        splitDone = true;
     }
     void AddSplit(const std::string& m) {
         double prev = splits.empty() ? 0 : splits.back().time;
@@ -78,10 +85,11 @@ struct Run {
     // when the previous map was completed cleanly and is PB-eligible.
     bool MapLoaded(const std::string& newMap, std::string* outMap, double* outIgt) {
         if (newMap == map) return false;           // reload / death / quickload on same map
-        bool eligible = mapClean && !map.empty();
+        bool eligible = mapClean && !map.empty() && map != "menu";
         if (eligible) { *outMap = map; *outIgt = mapIgt; }
         bool transition = !map.empty();            // first map after launch isn't a clean entry
-        if (transition && state == Running && map != "menu") AddSplit(map);  // main menu is a map too
+        if (transition && state == Running && map != "menu" && !splitDone) AddSplit(map);  // main menu is a map too
+        splitDone = false;
         map = newMap;
         mapRta = mapIgt = 0;
         mapClean = transition;
