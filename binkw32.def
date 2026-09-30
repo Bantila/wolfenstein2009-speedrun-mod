@@ -15,7 +15,7 @@ EXPORTS
   _BinkBufferSetScale@12=binkw32_orig._BinkBufferSetScale@12 @13
   _BinkBufferUnlock@4=binkw32_orig._BinkBufferUnlock@4 @14
   _BinkCheckCursor@20=binkw32_orig._BinkCheckCursor@20 @15
-  _BinkClose@4=binkw32_orig._BinkClose@4 @16
+  _BinkClose@4=_SrBinkClose@4 @16
   _BinkCloseTrack@4=binkw32_orig._BinkCloseTrack@4 @17
   _BinkControlBackgroundIO@8=binkw32_orig._BinkControlBackgroundIO@8 @18
   _BinkControlPlatformFeatures@8=binkw32_orig._BinkControlPlatformFeatures@8 @19
@@ -43,7 +43,7 @@ EXPORTS
   _BinkIsSoftwareCursor@8=binkw32_orig._BinkIsSoftwareCursor@8 @41
   _BinkLogoAddress@0=binkw32_orig._BinkLogoAddress@0 @42
   _BinkNextFrame@4=binkw32_orig._BinkNextFrame@4 @43
-  _BinkOpen@8=binkw32_orig._BinkOpen@8 @44
+  _BinkOpen@8=_SrBinkOpen@8 @44
   _BinkOpenDirectSound@4=binkw32_orig._BinkOpenDirectSound@4 @45
   _BinkOpenMiles@4=binkw32_orig._BinkOpenMiles@4 @46
   _BinkOpenTrack@8=binkw32_orig._BinkOpenTrack@8 @47

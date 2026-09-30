@@ -6,7 +6,8 @@ In-game speedrun overlay and launcher for Wolfenstein (2009, Raven Software), PC
 
 - In-game overlay drawn inside the D3D9 frame, so it works in exclusive fullscreen and shows up in recordings.
 - Player coordinates and a speedometer (current and max horizontal speed per map).
-- Timers: total RTA, total IGT with load removal, map RTA, map IGT.
+- Timers: total RTA, total IGT, map RTA, map IGT. IGT excludes loads, in-engine cutscenes, pre-rendered (Bink) videos and the mission complete screen.
+- LiveSplit-style splits per map: segment time, delta against your PB run (green = ahead, red = behind, gold = best segment) and split time. The PB run is saved when you finish a faster run without teleports.
 - Per-map PBs for each category, with a live delta.
 - Load and death counters.
 - Categories: Any% and Cheat%. Cheat% keeps god mode on and runs configurable console commands after every map load (default: `give all;giveAllPowerUpgrades;momoney`).

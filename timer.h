@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 inline std::string FormatTime(double s, int decimals, bool hoursAlways) {
     if (s < 0) s = 0;
@@ -25,6 +26,12 @@ inline std::string FormatDelta(double d, int decimals) {
     return (d < 0 ? "-" : "+") + FormatTime(std::fabs(d), decimals, false);
 }
 
+struct Split {
+    std::string map;
+    double seg, time;   // segment IGT and cumulative run IGT at the split
+    bool gold;          // new best segment for this map
+};
+
 struct Run {
     enum State { Idle, Running, Finished } state = Idle;
     double rta = 0, igt = 0;           // whole run
@@ -34,20 +41,32 @@ struct Run {
     std::string map;                   // current map name
     bool mapClean = false;             // entered via level transition, no teleport -> PB eligible
     bool practice = false;             // teleport used during the run
-    bool loading = false;
+    bool loading = false;              // real loads: counted, excluded from IGT
+    bool paused = false;               // cutscenes, mission complete screen: excluded from IGT
+    std::vector<Split> splits;         // completed maps in this run
     bool alive = true;
 
     void Reset() { *this = Run{map}; }
     explicit Run(std::string m = "") : map(std::move(m)) {}
     void Start() { Reset(); state = Running; }
-    void Finish() { if (state == Running) state = Finished; }
+    void Finish() {
+        if (state != Running) return;
+        AddSplit(map);
+        state = Finished;
+    }
+    void AddSplit(const std::string& m) {
+        double prev = splits.empty() ? 0 : splits.back().time;
+        splits.push_back(Split{m, igt - prev, igt, false});
+    }
+    bool IgtStopped() const { return loading || paused; }
 
     void Tick(double dt) {
         mapRta += dt;
-        if (!loading) mapIgt += dt;
+        if (!IgtStopped()) mapIgt += dt;
         if (state != Running) return;
         rta += dt;
-        if (loading) loadTime += dt; else igt += dt;
+        if (loading) loadTime += dt;
+        if (!IgtStopped()) igt += dt;
     }
 
     void SetLoading(bool now) {
@@ -62,6 +81,7 @@ struct Run {
         bool eligible = mapClean && !map.empty();
         if (eligible) { *outMap = map; *outIgt = mapIgt; }
         bool transition = !map.empty();            // first map after launch isn't a clean entry
+        if (transition && state == Running && map != "menu") AddSplit(map);  // main menu is a map too
         map = newMap;
         mapRta = mapIgt = 0;
         mapClean = transition;

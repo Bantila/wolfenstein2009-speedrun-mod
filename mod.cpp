@@ -25,6 +25,9 @@ const DWORD RVA_PHYS_GETORIGIN = 0x2f8760;  // idPhysics_Player::GetOrigin (shar
 const DWORD GL_LOCALCLIENT     = 0x63d4c;   // int localClientNum
 const DWORD GL_ENTITIES        = 0x4d0;     // idEntity *entities[]
 const DWORD GL_MAPNAME         = 0x63e28;   // idStr mapFileName data pointer
+const DWORD GL_INCINEMATIC     = 0x63bdc;   // bool inCinematic (set by SetCamera)
+const DWORD RVA_MISSIONCOMPLETE = 0x875e8c; // mission complete menu object (from the community ASL)
+const DWORD MC_ACTIVE          = 0x268;     // bool: mission complete screen shown
 const DWORD PL_PHYSICS         = 0x2ec;     // idPhysics *physics
 const DWORD PL_HEALTH          = 0xd8;      // float health
 const DWORD PL_GODMODE         = 0x5fa;     // bool godmode
@@ -60,11 +63,12 @@ typedef HRESULT(WINAPI* D3DXCreateFontA_t)(IDirect3DDevice9*, INT, UINT, UINT, U
 
 // ---- Settings --------------------------------------------------------------------------------
 enum WidgetId { W_COORDS, W_SPEED, W_RTA, W_IGT, W_MAP_RTA, W_MAP_IGT, W_PB, W_LOADS, W_DEATHS,
-                W_CATEGORY, W_MAP, W_COUNT };
+                W_CATEGORY, W_MAP, W_SPLITS, W_COUNT };
 const char* kWidgetNames[W_COUNT] = {"coords", "speed", "total_rta", "total_igt", "map_rta", "map_igt",
-                                     "pb", "loads", "deaths", "category", "map"};
+                                     "pb", "loads", "deaths", "category", "map", "splits"};
 const char* kWidgetLabels[W_COUNT] = {"", "Speed ", "RTA ", "IGT ", "Map RTA ", "Map IGT ",
-                                      "PB ", "Loads ", "Deaths ", "", ""};
+                                      "PB ", "Loads ", "Deaths ", "", "", ""};
+const D3DCOLOR COLOR_AHEAD = 0xFF40E040, COLOR_BEHIND = 0xFFE04848, COLOR_GOLD = 0xFFFFD700;
 
 struct Widget { bool on; float x, y; int anchor, size; D3DCOLOR color; std::string label; };
 enum Key { K_TOGGLE, K_STARTSTOP, K_RESET, K_CATEGORY, K_SAVEPOS, K_TELEPORT, K_COUNT };
@@ -74,7 +78,7 @@ const int kKeyDefaults[K_COUNT] = {VK_F6, VK_F7, VK_F8, VK_F10, VK_NUMPAD7, VK_N
 struct Settings {
     Widget w[W_COUNT];
     int keys[K_COUNT];
-    int decimals = 2;
+    int decimals = 2, splitLines = 10;
     bool hoursAlways = false, autoStart = true, cheatGod = true, shadow = true;
     std::string font = "Consolas", category = "any", startMap = "trainyard";
     std::string cheatCmds, teleportCmd;
@@ -88,6 +92,8 @@ static bool g_fontsDirty = true, g_visible = true, g_supported = false;
 static float g_pos[3], g_speed, g_maxSpeed;
 static bool g_havePlayer;
 static double g_pb = -1;          // PB of current map in current category, -1 = none
+static std::vector<Split> g_pbSplits;  // splits of the best full run in current category
+static volatile LONG g_binkOpen;  // open Bink videos (pre-rendered cutscenes)
 static std::string g_msg; static DWORD g_msgUntil;
 
 static void Log(const char* fmt, ...) {
@@ -109,15 +115,17 @@ static Settings LoadSettings() {
         std::string sec = std::string("widget.") + kWidgetNames[i];
         Widget& w = s.w[i];
         w.on = IniI(sec.c_str(), "enabled", i != W_MAP) != 0;
-        w.x = IniF(sec.c_str(), "x", 0.01f);
-        w.y = IniF(sec.c_str(), "y", 0.02f + 0.03f * i);
-        w.anchor = IniI(sec.c_str(), "anchor", 0);
+        bool splits = i == W_SPLITS;  // splits default to the top right corner
+        w.x = IniF(sec.c_str(), "x", splits ? 0.99f : 0.01f);
+        w.y = IniF(sec.c_str(), "y", splits ? 0.02f : 0.02f + 0.03f * i);
+        w.anchor = IniI(sec.c_str(), "anchor", splits ? 1 : 0);
         w.size = IniI(sec.c_str(), "size", 22);
         w.color = strtoul(IniS(sec.c_str(), "color", "FFFFFFFF").c_str(), nullptr, 16);
         w.label = IniS(sec.c_str(), "label", kWidgetLabels[i]);
     }
     for (int i = 0; i < K_COUNT; i++) s.keys[i] = IniI("keys", kKeyNames[i], kKeyDefaults[i]);
     s.decimals = IniI("general", "decimals", 2);
+    s.splitLines = IniI("general", "split_lines", 10);
     s.hoursAlways = IniI("general", "hours_always", 0) != 0;
     s.autoStart = IniI("general", "auto_start", 1) != 0;
     s.shadow = IniI("general", "shadow", 1) != 0;
@@ -137,10 +145,34 @@ static double ReadPb(const std::string& cat, const std::string& map) {
     return v.empty() ? -1 : atof(v.c_str());
 }
 
+// Best full run: [splits.<category>] n=, map0=, time0=, ... in srmod_pb.ini
+static std::vector<Split> ReadPbSplits(const std::string& cat) {
+    std::string sec = "splits." + cat;
+    std::vector<Split> v;
+    int n = GetPrivateProfileIntA(sec.c_str(), "n", 0, g_pbIni);
+    for (int i = 0; i < n; i++) {
+        std::string k = std::to_string(i);
+        double t = atof(IniS(sec.c_str(), ("time" + k).c_str(), "0", g_pbIni).c_str());
+        v.push_back(Split{IniS(sec.c_str(), ("map" + k).c_str(), "", g_pbIni), t - (v.empty() ? 0 : v.back().time), t, false});
+    }
+    return v;
+}
+
+static void WritePbSplits(const std::string& cat, const std::vector<Split>& v) {
+    std::string sec = "splits." + cat;
+    WritePrivateProfileStringA(sec.c_str(), nullptr, nullptr, g_pbIni);  // drop old run
+    WritePrivateProfileStringA(sec.c_str(), "n", std::to_string(v.size()).c_str(), g_pbIni);
+    for (size_t i = 0; i < v.size(); i++) {
+        char t[32]; snprintf(t, sizeof t, "%.3f", v[i].time);
+        WritePrivateProfileStringA(sec.c_str(), ("map" + std::to_string(i)).c_str(), v[i].map.c_str(), g_pbIni);
+        WritePrivateProfileStringA(sec.c_str(), ("time" + std::to_string(i)).c_str(), t, g_pbIni);
+    }
+}
+
 static void Message(const std::string& m) { g_msg = m; g_msgUntil = GetTickCount() + 2500; }
 
 // ---- Game memory -----------------------------------------------------------------------------
-struct Snapshot { bool loading, player; float pos[3], vel[3], hp; char map[64]; };
+struct Snapshot { bool loading, paused, player; float pos[3], vel[3], hp; char map[64]; };
 static BYTE* g_session;
 
 static BYTE* FindSession() {
@@ -174,7 +206,11 @@ static void ReadGame(Snapshot* s, bool writeGod) {
     __try {
         if (g_session) s->loading = g_session[SESS_INSIDE_MAPCHANGE] != 0;
         BYTE* gx = (BYTE*)GetModuleHandleA("Gamex86.dll");
+        s->paused = g_binkOpen > 0;
         if (!gx || !g_supported) return;
+        s->paused |= gx[RVA_GAMELOCAL + GL_INCINEMATIC] != 0;
+        BYTE* mc = *(BYTE**)(gx + RVA_MISSIONCOMPLETE);
+        if (mc) s->paused |= mc[MC_ACTIVE] != 0;
         const char* m = *(const char**)(gx + RVA_GAMELOCAL + GL_MAPNAME);
         if (m) {
             const char* base = m;  // "maps/game/trainyard.map" -> "trainyard"
@@ -221,6 +257,24 @@ static bool GameFocused() {
     return pid == GetCurrentProcessId();
 }
 
+// Final split; saves the map PB for the last map and the whole run as PB if faster. Caller holds g_mx.
+static void FinishRun() {
+    bool clean = g_run.mapClean;
+    std::string map = g_run.map; double mapIgt = g_run.mapIgt;
+    g_run.Finish();
+    double pb = ReadPb(g_set.category, map);
+    if (clean && (pb < 0 || mapIgt < pb)) {
+        char v[32]; snprintf(v, sizeof v, "%.3f", mapIgt);
+        WritePrivateProfileStringA(g_set.category.c_str(), map.c_str(), v, g_pbIni);
+        g_run.splits.back().gold = true;
+    }
+    bool better = g_pbSplits.empty() || g_run.igt < g_pbSplits.back().time;
+    if (!g_run.practice && better) {
+        WritePbSplits(g_set.category, g_run.splits);
+        Message("New PB run: " + FormatTime(g_run.igt, 3, false));
+    } else Message("Run finished");
+}
+
 static void Poll() {
     LARGE_INTEGER freq, last, now;
     QueryPerformanceFrequency(&freq); QueryPerformanceCounter(&last);
@@ -245,7 +299,7 @@ static void Poll() {
                 iniTime = fa.ftLastWriteTime;
                 Settings s = LoadSettings();
                 std::lock_guard<std::mutex> lk(g_mx);
-                if (s.category != g_set.category) g_pb = ReadPb(s.category, g_run.map);
+                if (s.category != g_set.category) { g_pb = ReadPb(s.category, g_run.map); g_pbSplits = ReadPbSplits(s.category); }
                 g_set = s; g_fontsDirty = true;
             }
         }
@@ -257,6 +311,7 @@ static void Poll() {
             Snapshot s; ReadGame(&s, cheat && g_set.cheatGod);
 
             g_run.SetLoading(s.loading);
+            g_run.paused = s.paused;
             g_run.Tick(dt);
             if (wasLoading && !s.loading) loadEndTick = GetTickCount();
             wasLoading = s.loading;
@@ -270,12 +325,14 @@ static void Poll() {
                         char v[32]; snprintf(v, sizeof v, "%.3f", t);
                         WritePrivateProfileStringA(g_set.category.c_str(), done.c_str(), v, g_pbIni);
                         Message("New PB on " + done + ": " + FormatTime(t, 3, false));
+                        if (!g_run.splits.empty() && g_run.splits.back().map == done) g_run.splits.back().gold = true;
                     }
                 }
                 // Entering the start map (from another map) resets and starts a new run.
                 if (g_set.autoStart && !g_set.startMap.empty() &&
                     _stricmp(g_run.map.c_str(), g_set.startMap.c_str()) == 0) {
                     g_run.Start(); g_run.mapClean = true;
+                    g_pbSplits = ReadPbSplits(g_set.category);
                     Message("Run started");
                 }
                 g_pb = ReadPb(g_set.category, g_run.map);
@@ -304,14 +361,14 @@ static void Poll() {
                     switch (k) {
                     case K_TOGGLE: g_visible = !g_visible; break;
                     case K_STARTSTOP:
-                        if (g_run.state == Run::Running) { g_run.Finish(); Message("Run finished"); }
-                        else { g_run.Start(); Message("Run started"); }
+                        if (g_run.state == Run::Running) FinishRun();
+                        else { g_run.Start(); g_pbSplits = ReadPbSplits(g_set.category); Message("Run started"); }
                         break;
                     case K_RESET: g_run.Reset(); g_maxSpeed = 0; Message("Reset"); break;
                     case K_CATEGORY: {
                         std::string c = g_set.category == "cheat" ? "any" : "cheat";
                         WritePrivateProfileStringA("general", "category", c.c_str(), g_ini);
-                        g_set.category = c; g_pb = ReadPb(c, g_run.map);
+                        g_set.category = c; g_pb = ReadPb(c, g_run.map); g_pbSplits = ReadPbSplits(c);
                         if (c == "cheat") cheatsPending = true;
                         Message(std::string("Category: ") + CategoryName(c));
                         break;
@@ -392,6 +449,65 @@ static void DrawLine(IDirect3DDevice9* dev, const std::string& face, int size, D
     f->DrawTextA(nullptr, text.c_str(), -1, &d, DT_NOCLIP, color);
 }
 
+// LiveSplit-style table: map | segment | delta vs PB run | split time. Last row is the current map (live).
+static void DrawSplits(IDirect3DDevice9* dev, const Settings& st, const Widget& w, int W, int H) {
+    ID3DXFont* f = Font(dev, w.size, st.font);
+    if (!f || g_run.state == Run::Idle) return;
+    auto T = [&](double t) { return FormatTime(t, st.decimals, st.hoursAlways); };
+    struct Row { std::string col[4]; D3DCOLOR deltaColor; };
+    std::vector<Row> rows;
+    const auto& sp = g_run.splits;
+    size_t first = sp.size() + 1 > (size_t)st.splitLines ? sp.size() + 1 - st.splitLines : 0;
+    for (size_t i = first; i <= sp.size(); i++) {
+        bool live = i == sp.size();
+        if (live && g_run.state != Run::Running) break;
+        std::string map = live ? g_run.map : sp[i].map;
+        double time = live ? g_run.igt : sp[i].time;
+        double seg = time - (i ? sp[i - 1].time : 0);
+        Row r; r.col[0] = map; r.col[1] = T(seg); r.col[3] = T(time); r.deltaColor = w.color;
+        if (i < g_pbSplits.size() && g_pbSplits[i].map == map) {
+            double d = time - g_pbSplits[i].time;
+            r.col[2] = FormatDelta(d, st.decimals);
+            r.deltaColor = d < 0 ? COLOR_AHEAD : COLOR_BEHIND;
+        }
+        if (!live && sp[i].gold) r.deltaColor = COLOR_GOLD;
+        if (live) r.col[1] = "";
+        rows.push_back(r);
+    }
+    if (rows.empty()) return;
+
+    int colW[4] = {}, lineH = 0, gap = w.size;
+    for (auto& r : rows)
+        for (int c = 0; c < 4; c++) {
+            RECT m = {0, 0, 0, 0};
+            f->DrawTextA(nullptr, r.col[c].empty() ? " " : r.col[c].c_str(), -1, &m, DT_CALCRECT | DT_NOCLIP, 0);
+            if (m.right > colW[c]) colW[c] = m.right;
+            if (m.bottom > lineH) lineH = m.bottom;
+        }
+    int totalW = colW[0] + colW[1] + colW[2] + colW[3] + 3 * gap, totalH = lineH * (int)rows.size();
+    int x0 = int(w.x * W), y = int(w.y * H);
+    if (w.anchor == 1 || w.anchor == 3) x0 -= totalW;
+    if (w.anchor == 2 || w.anchor == 3) y -= totalH;
+    if (w.anchor == 4) { x0 -= totalW / 2; y -= totalH / 2; }
+
+    for (auto& r : rows) {
+        int x = x0;
+        for (int c = 0; c < 4; c++) {
+            // Name left-aligned, numbers right-aligned in their column.
+            RECT d = {x, y, x + colW[c], y + lineH};
+            DWORD fmt = DT_NOCLIP | (c == 0 ? DT_LEFT : DT_RIGHT);
+            D3DCOLOR col = c == 2 ? r.deltaColor : w.color;
+            if (st.shadow) {
+                RECT s = {d.left + 2, d.top + 2, d.right + 2, d.bottom + 2};
+                f->DrawTextA(nullptr, r.col[c].c_str(), -1, &s, fmt, D3DCOLOR_ARGB((col >> 24) & 0xFF, 0, 0, 0));
+            }
+            f->DrawTextA(nullptr, r.col[c].c_str(), -1, &d, fmt, col);
+            x += colW[c] + gap;
+        }
+        y += lineH;
+    }
+}
+
 static void DrawOverlay(IDirect3DDevice9* dev) {
     std::lock_guard<std::mutex> lk(g_mx);
     if (g_fontsDirty) { ReleaseFonts(); g_fontsDirty = false; }
@@ -412,7 +528,9 @@ static void DrawOverlay(IDirect3DDevice9* dev) {
                      0.5f, 0.05f, 4, W, H);
         for (int i = 0; i < W_COUNT; i++) {
             const Widget& w = st.w[i];
-            if (w.on) DrawLine(dev, st.font, w.size, w.color, st.shadow, w.label + WidgetText(i, st), w.x, w.y, w.anchor, W, H);
+            if (!w.on) continue;
+            if (i == W_SPLITS) DrawSplits(dev, st, w, W, H);
+            else DrawLine(dev, st.font, w.size, w.color, st.shadow, w.label + WidgetText(i, st), w.x, w.y, w.anchor, W, H);
         }
         if (GetTickCount() < g_msgUntil)
             DrawLine(dev, st.font, 30, 0xFFFFD040, true, g_msg, 0.5f, 0.2f, 4, W, H);
@@ -505,6 +623,7 @@ static DWORD WINAPI MainThread(LPVOID) {
     if (!g_createFont) Log("d3dx9_43.dll / D3DXCreateFontA not found: install DirectX End-User Runtime");
 
     g_set = LoadSettings();
+    g_pbSplits = ReadPbSplits(g_set.category);
     g_session = FindSession();
     Log("session: %p", g_session);
 
@@ -519,6 +638,27 @@ static DWORD WINAPI MainThread(LPVOID) {
     Log("Gamex86.dll at %p, supported=%d", gx, g_supported);
     Poll();
     return 0;
+}
+
+// ---- Bink exports we wrap (the rest are forwarded to binkw32_orig.dll by binkw32.def) --------
+// An open Bink handle means a pre-rendered cutscene is playing; IGT pauses meanwhile.
+// ponytail: counts every Bink video, including menu backgrounds; fine because runs don't sit in menus.
+static FARPROC BinkOrig(const char* name) {
+    static HMODULE orig = LoadLibraryA("binkw32_orig.dll");
+    return orig ? GetProcAddress(orig, name) : nullptr;
+}
+
+extern "C" void* __stdcall SrBinkOpen(const char* file, unsigned flags) {
+    static auto fn = (void*(__stdcall*)(const char*, unsigned))BinkOrig("_BinkOpen@8");
+    void* h = fn ? fn(file, flags) : nullptr;
+    if (h) InterlockedIncrement(&g_binkOpen);
+    return h;
+}
+
+extern "C" void __stdcall SrBinkClose(void* h) {
+    static auto fn = (void(__stdcall*)(void*))BinkOrig("_BinkClose@4");
+    if (fn) fn(h);
+    if (h && InterlockedDecrement(&g_binkOpen) < 0) InterlockedExchange(&g_binkOpen, 0);
 }
 
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {

@@ -31,7 +31,17 @@ int main() {
     r.Teleported();
     assert(!r.MapLoaded("farm", &m, &t) && r.practice);
 
+    // Splits: trainyard -> church -> farm, plus final split on Finish.
+    assert(r.splits.size() == 2 && r.splits[0].map == "trainyard" && r.splits[0].time == 4);
+    assert(r.splits[1].map == "church" && r.splits[1].seg == 0);
+
+    // Cutscene / mission complete: IGT stops, RTA runs, no load counted.
+    r.paused = true; r.Tick(2); r.paused = false;
+    assert(r.rta == 8 && r.igt == 4 && r.loads == 1 && r.mapIgt == 0);
+    r.Tick(1);
+
     r.Finish(); r.Tick(5);
-    assert(r.rta == 6 && r.state == Run::Finished);
+    assert(r.rta == 9 && r.state == Run::Finished);
+    assert(r.splits.size() == 3 && r.splits[2].map == "farm" && r.splits[2].seg == 1 && r.splits[2].time == 5);
     puts("timer_test OK");
 }

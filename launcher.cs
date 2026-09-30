@@ -44,9 +44,10 @@ class LauncherForm : Form {
     static string L(string en, string ru) { return Ru ? ru : en; }
 
     // Must match the defaults in mod.cpp LoadSettings().
-    static readonly string[] Ids = { "coords", "speed", "total_rta", "total_igt", "map_rta", "map_igt", "pb", "loads", "deaths", "category", "map" };
-    static readonly string[] Labels = { "", "Speed ", "RTA ", "IGT ", "Map RTA ", "Map IGT ", "PB ", "Loads ", "Deaths ", "", "" };
-    static readonly string[] Samples = { "X 1234.5  Y -678.9  Z 12.0", "320 u/s (max 455)", "1:23:45.67", "1:20:02.10", "4:05.33", "3:58.90", "4:01.00  -0:02.10", "12 (3:43.57)", "3", "Any%", "trainyard" };
+    static readonly string[] Ids = { "coords", "speed", "total_rta", "total_igt", "map_rta", "map_igt", "pb", "loads", "deaths", "category", "map", "splits" };
+    static readonly string[] Labels = { "", "Speed ", "RTA ", "IGT ", "Map RTA ", "Map IGT ", "PB ", "Loads ", "Deaths ", "", "", "" };
+    static readonly string[] Samples = { "X 1234.5  Y -678.9  Z 12.0", "320 u/s (max 455)", "1:23:45.67", "1:20:02.10", "4:05.33", "3:58.90", "4:01.00  -0:02.10", "12 (3:43.57)", "3", "Any%", "trainyard",
+        "trainyard   4:01.20  -0:01.20   4:01.20\nfarm       12:30.00  +0:03.10  16:31.20\nchurch                -0:00.40  19:02.00" };
     static readonly string[] Keys = { "toggle", "start_stop", "reset", "category", "save_pos", "teleport" };
     static readonly string[] KeyTitles = { L("Show/hide overlay", "Показать/скрыть оверлей"), L("Start/finish run", "Старт/финиш рана"), L("Reset", "Сброс"), L("Switch category", "Сменить категорию"), L("Save position", "Сохранить позицию"), L("Teleport to position", "Телепорт на позицию") };
     static readonly Keys[] KeyDefaults = { System.Windows.Forms.Keys.F6, System.Windows.Forms.Keys.F7, System.Windows.Forms.Keys.F8, System.Windows.Forms.Keys.F10, System.Windows.Forms.Keys.NumPad7, System.Windows.Forms.Keys.NumPad9 };
@@ -90,8 +91,9 @@ class LauncherForm : Form {
         for (int i = 0; i < Ids.Length; i++) {
             var w = new Widget { Id = Ids[i], Sample = Samples[i] };
             w.On = Ini.GetI(w.Sec, "enabled", Ids[i] != "map" ? 1 : 0) != 0;
-            w.X = Ini.GetF(w.Sec, "x", 0.01f); w.Y = Ini.GetF(w.Sec, "y", 0.02f + 0.03f * i);
-            w.Anchor = Ini.GetI(w.Sec, "anchor", 0); w.Size = Ini.GetI(w.Sec, "size", 22);
+            bool splits = Ids[i] == "splits";  // same defaults as mod.cpp LoadSettings()
+            w.X = Ini.GetF(w.Sec, "x", splits ? 0.99f : 0.01f); w.Y = Ini.GetF(w.Sec, "y", splits ? 0.02f : 0.02f + 0.03f * i);
+            w.Anchor = Ini.GetI(w.Sec, "anchor", splits ? 1 : 0); w.Size = Ini.GetI(w.Sec, "size", 22);
             w.Label = Ini.Get(w.Sec, "label", Labels[i]);
             uint c; w.Color = uint.TryParse(Ini.Get(w.Sec, "color", "FFFFFFFF"), NumberStyles.HexNumber, null, out c) ? Color.FromArgb((int)c) : Color.White;
             widgets[i] = w;
@@ -298,6 +300,9 @@ class LauncherForm : Form {
         dec.ValueChanged += delegate { Ini.Set("general", "decimals", (int)dec.Value); };
         AddRow(t, L("Decimal places (0–3)", "Знаков после точки (0–3)"), dec);
         AddCheck(t, L("Always show hours", "Всегда показывать часы"), "general", "hours_always", 0);
+        var lines = new NumericUpDown { Minimum = 1, Maximum = 30, Value = Math.Max(1, Math.Min(30, Ini.GetI("general", "split_lines", 10))) };
+        lines.ValueChanged += delegate { Ini.Set("general", "split_lines", (int)lines.Value); };
+        AddRow(t, L("Split rows shown", "Строк в сплитах"), lines);
         AddCheck(t, L("Text shadow", "Тень под текстом"), "general", "shadow", 1);
         AddCheck(t, L("Auto start/reset run when the start mission loads", "Автостарт рана при загрузке стартовой карты"), "general", "auto_start", 1);
         var start = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
