@@ -166,10 +166,13 @@ class LauncherForm : Form {
             var d = new ColorDialog { Color = Sel.Color, FullOpen = true };
             if (d.ShowDialog() == DialogResult.OK) { Sel.Color = Color.FromArgb(255, d.Color); SaveWidget(Sel); LoadProps(); }
         };
-        AddRow(props, L("Label", "Подпись"), labelBox); AddRow(props, L("Size (px @1080p)", "Размер (px @1080p)"), sizeBox);
+        AddRow(props, L("Label", "Подпись"), labelBox); AddRow(props, L("Size (px)", "Размер (px)"), sizeBox);
         AddRow(props, L("Anchor", "Привязка"), anchorBox); AddRow(props, "", colorBtn);
-        props.Controls.Add(new Label { Text = L("Drag widgets in the preview.\nPositions are stored as screen fractions,\nso they fit any resolution.", "Тащи виджет мышью в превью.\nПозиция хранится в долях экрана,\nподходит под любое разрешение."), AutoSize = true, ForeColor = Color.Gray }, 0, 4);
-        props.SetColumnSpan(props.GetControlFromPosition(0, 4), 2);
+        AddRow(props, L("Your resolution", "Твоё разрешение"), ResolutionBox());
+        var hint = new Label { AutoSize = true, ForeColor = Color.Gray, Text = L(
+            "Drag widgets in the preview.\nPositions are stored as screen fractions,\nso they fit any resolution.\nResolution: pick or type, e.g. 2560x1600.",
+            "Тащи виджет мышью в превью.\nПозиция хранится в долях экрана,\nподходит под любое разрешение.\nРазрешение: выбери или впиши, напр. 2560x1600.") };
+        props.Controls.Add(hint, 0, props.RowCount++); props.SetColumnSpan(hint, 2);
         left.Controls.Add(props); left.Controls.Add(list);
 
         preview.Dock = DockStyle.Fill; preview.BackColor = Color.FromArgb(40, 44, 52);
@@ -207,14 +210,44 @@ class LauncherForm : Form {
         preview.Invalidate();
     }
 
+    // Preview uses the player's resolution: aspect ratio for layout, height for font pixel scale.
+    static readonly string[] Resolutions = {
+        "1280x720", "1366x768", "1600x900", "1920x1080", "2560x1440", "3840x2160",   // 16:9
+        "1280x800", "1440x900", "1680x1050", "1920x1200", "2560x1600",               // 16:10
+        "2560x1080", "3440x1440", "1024x768", "1280x1024" };                          // 21:9, 4:3, 5:4
+    int resW = 1920, resH = 1080;
+
+    static string Aspect(int w, int h) {
+        int a = w, b = h; while (b != 0) { int t = a % b; a = b; b = t; }
+        string r = (w / a) + ":" + (h / a);
+        return r == "8:5" ? "16:10" : r == "64:27" || r == "43:18" ? "21:9" : r;
+    }
+
+    ComboBox ResolutionBox() {
+        var box = new ComboBox { DropDownStyle = ComboBoxStyle.DropDown };
+        var scr = System.Windows.Forms.Screen.PrimaryScreen.Bounds;
+        string cur = Ini.Get("launcher", "resolution", scr.Width + "x" + scr.Height);
+        foreach (var r in Resolutions) box.Items.Add(r);
+        box.Text = cur; ParseRes(cur);
+        box.TextChanged += delegate { if (ParseRes(box.Text)) { Ini.Set("launcher", "resolution", resW + "x" + resH); preview.Invalidate(); } };
+        return box;
+    }
+
+    bool ParseRes(string s) {
+        var p = s.ToLower().Replace(" ", "").Split('x', '×', '*');
+        int w, h;
+        if (p.Length != 2 || !int.TryParse(p[0], out w) || !int.TryParse(p[1], out h) || w < 320 || h < 200) return false;
+        resW = w; resH = h; return true;
+    }
+
     Rectangle Screen16x9() {
-        int W = preview.ClientSize.Width - 20, H = preview.ClientSize.Height - 20;
-        if (W * 9 > H * 16) W = H * 16 / 9; else H = W * 9 / 16;
+        int W = preview.ClientSize.Width - 20, H = preview.ClientSize.Height - 40;
+        if ((long)W * resH > (long)H * resW) W = H * resW / resH; else H = W * resH / resW;
         return new Rectangle((preview.ClientSize.Width - W) / 2, (preview.ClientSize.Height - H) / 2, W, H);
     }
 
     Rectangle WidgetRect(Graphics g, Widget w, Rectangle scr, out Font f) {
-        f = new Font(Ini.Get("general", "font", "Consolas"), Math.Max(4f, w.Size * scr.Height / 1080f), FontStyle.Bold, GraphicsUnit.Pixel);
+        f = new Font(Ini.Get("general", "font", "Consolas"), Math.Max(4f, w.Size * scr.Height / (float)resH), FontStyle.Bold, GraphicsUnit.Pixel);
         var sz = g.MeasureString(w.Label + w.Sample, f).ToSize();
         int x = scr.X + (int)(w.X * scr.Width), y = scr.Y + (int)(w.Y * scr.Height);
         if (w.Anchor == 1 || w.Anchor == 3) x -= sz.Width;
@@ -227,6 +260,7 @@ class LauncherForm : Form {
         var g = e.Graphics; var scr = Screen16x9();
         using (var b = new System.Drawing.Drawing2D.LinearGradientBrush(scr, Color.FromArgb(70, 80, 70), Color.FromArgb(25, 28, 25), 90f)) g.FillRectangle(b, scr);
         g.DrawRectangle(Pens.Gray, scr);
+        g.DrawString(resW + "x" + resH + "  (" + Aspect(resW, resH) + ")", Font, Brushes.Gray, scr.X, scr.Bottom + 4);
         for (int i = 0; i < widgets.Length; i++) {
             var w = widgets[i]; if (!w.On) continue;
             Font f; var r = WidgetRect(g, w, scr, out f);
