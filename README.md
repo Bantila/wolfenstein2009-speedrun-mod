@@ -1,8 +1,6 @@
 # Wolfenstein (2009) Speedrun Mod
 
-In-game speedrun overlay and launcher for Wolfenstein (2009, Raven Software), PC version 1.21.
-
-Оверлей и лаунчер для спидрана Wolfenstein (2009), PC-версия 1.21.
+In-game speedrun overlay and launcher for Wolfenstein (2009, Raven Software), PC version 1.21. The launcher UI is available in English and Russian.
 
 ## Features
 
@@ -13,15 +11,15 @@ In-game speedrun overlay and launcher for Wolfenstein (2009, Raven Software), PC
 - Load and death counters.
 - Categories: Any% and Cheat%. Cheat% keeps god mode on and runs configurable console commands after every map load (default: `give all;giveAllPowerUpgrades;momoney`).
 - Hotkeys: show/hide overlay, start/finish, reset, switch category, save position, teleport. Teleporting marks the run as PRACTICE.
-- Auto start and reset when you enter the start map.
+- Auto start and reset when the chosen start mission loads.
 - Launcher: installs the mod, starts the game, and has a drag-and-drop overlay layout editor with per-widget label, size, color and anchor. Also sets the font, time format (0–3 decimals) and hotkeys. Changes apply to a running game in about 0.5 s.
 
 ## Install
 
 1. Copy `SrmodLauncher.exe` and `srmod.dll` into the game's `SP` folder, next to `Wolf2.exe`.
-2. Run `SrmodLauncher.exe` and press **Играть**.
+2. Run `SrmodLauncher.exe` and press **Play**.
 
-The launcher renames the original `binkw32.dll` to `binkw32_orig.dll` and installs the mod in its place. **Удалить мод** restores the original.
+The launcher renames the original `binkw32.dll` to `binkw32_orig.dll` and installs the mod in its place. **Uninstall mod** restores the original.
 
 Requirements: DirectX End-User Runtime (for `d3dx9_43.dll`) and .NET Framework 4.x. Windows 10 and 11 include .NET Framework 4.x.
 

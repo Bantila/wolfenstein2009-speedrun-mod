@@ -34,23 +34,36 @@ class Widget {
 }
 
 class LauncherForm : Form {
+    // UI language: [launcher] ui = en|ru in srmod.ini, default from the Windows UI culture.
+    static readonly bool Ru = DetectRu();
+    static bool DetectRu() {
+        Ini.File = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "srmod.ini");
+        string ui = Ini.Get("launcher", "ui", "");
+        return ui == "" ? CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "ru" : ui == "ru";
+    }
+    static string L(string en, string ru) { return Ru ? ru : en; }
+
     // Must match the defaults in mod.cpp LoadSettings().
     static readonly string[] Ids = { "coords", "speed", "total_rta", "total_igt", "map_rta", "map_igt", "pb", "loads", "deaths", "category", "map" };
     static readonly string[] Labels = { "", "Speed ", "RTA ", "IGT ", "Map RTA ", "Map IGT ", "PB ", "Loads ", "Deaths ", "", "" };
     static readonly string[] Samples = { "X 1234.5  Y -678.9  Z 12.0", "320 u/s (max 455)", "1:23:45.67", "1:20:02.10", "4:05.33", "3:58.90", "4:01.00  -0:02.10", "12 (3:43.57)", "3", "Any%", "trainyard" };
     static readonly string[] Keys = { "toggle", "start_stop", "reset", "category", "save_pos", "teleport" };
-    static readonly string[] KeyTitles = { "Показать/скрыть оверлей", "Старт/финиш рана", "Сброс", "Сменить категорию", "Сохранить позицию", "Телепорт на позицию" };
+    static readonly string[] KeyTitles = { L("Show/hide overlay", "Показать/скрыть оверлей"), L("Start/finish run", "Старт/финиш рана"), L("Reset", "Сброс"), L("Switch category", "Сменить категорию"), L("Save position", "Сохранить позицию"), L("Teleport to position", "Телепорт на позицию") };
     static readonly Keys[] KeyDefaults = { System.Windows.Forms.Keys.F6, System.Windows.Forms.Keys.F7, System.Windows.Forms.Keys.F8, System.Windows.Forms.Keys.F10, System.Windows.Forms.Keys.NumPad7, System.Windows.Forms.Keys.NumPad9 };
-    // Map file name (as the mod reads it) and display name, pairs.
+    // Map file name (as the mod reads it), English and Russian display names.
     static readonly string[] Missions = {
-        "trainyard", "Вокзал", "farm", "Укреплённая ферма", "caverns", "Пещеры", "church", "Церковь",
-        "tavern", "Пивная", "hospital", "Госпиталь", "cannery", "Консервный завод", "digsite", "Раскоп",
-        "airfield_east", "Аэродром — восток", "airfield_west", "Аэродром — запад", "castle", "Замок",
-        "castle_top", "Вершина замка", "zeppelin", "Цеппелин", "blacksun", "Чёрное Солнце",
-        "downtown", "Деловой центр", "downtown_radio", "Радиостанция", "downtown_west", "Запад делового центра",
-        "mte", "Исторический центр — восток", "mte_para_hq", "База исследований СС", "mte_ss_hq", "Штаб-квартира СС",
-        "mtw", "Исторический центр — запад", "mtw_off", "Квартира офицера", "mtw_ware", "Склад" };
-    static readonly string[] Anchors = { "Левый верх", "Правый верх", "Левый низ", "Правый низ", "Центр" };
+        "trainyard", "Train Station", "Вокзал", "farm", "Farm", "Укреплённая ферма", "caverns", "Caverns", "Пещеры",
+        "church", "Church", "Церковь", "tavern", "Tavern", "Пивная", "hospital", "Hospital", "Госпиталь",
+        "cannery", "Cannery", "Консервный завод", "digsite", "Dig Site", "Раскоп",
+        "airfield_east", "Airfield East", "Аэродром — восток", "airfield_west", "Airfield West", "Аэродром — запад",
+        "castle", "Castle", "Замок", "castle_top", "Castle Top", "Вершина замка", "zeppelin", "Zeppelin", "Цеппелин",
+        "blacksun", "Black Sun", "Чёрное Солнце", "downtown", "Downtown", "Деловой центр",
+        "downtown_radio", "Radio Station", "Радиостанция", "downtown_west", "Downtown West", "Запад делового центра",
+        "mte", "Midtown East", "Исторический центр — восток", "mte_para_hq", "SS Paranormal HQ", "База исследований СС",
+        "mte_ss_hq", "SS HQ", "Штаб-квартира СС", "mtw", "Midtown West", "Исторический центр — запад",
+        "mtw_off", "Officer's Apartment", "Квартира офицера", "mtw_ware", "Warehouse", "Склад" };
+
+    static readonly string[] Anchors = { L("Top left", "Левый верх"), L("Top right", "Правый верх"), L("Bottom left", "Левый низ"), L("Bottom right", "Правый низ"), L("Center", "Центр") };
 
     string dir = AppDomain.CurrentDomain.BaseDirectory;
     Widget[] widgets = new Widget[Ids.Length];
@@ -95,18 +108,22 @@ class LauncherForm : Form {
         lang.SelectedItem = Ini.Get("launcher", "language", "english");
         if (lang.SelectedIndex < 0) lang.SelectedIndex = 0;
         lang.SelectedIndexChanged += delegate { Ini.Set("launcher", "language", lang.SelectedItem); };
-        var play = new Button { Text = "▶ Играть", Width = 110, Height = 30, BackColor = Color.FromArgb(60, 140, 60), ForeColor = Color.White };
+        var play = new Button { Text = L("▶ Play", "▶ Играть"), Width = 110, Height = 30, BackColor = Color.FromArgb(60, 140, 60), ForeColor = Color.White };
         play.Click += delegate { Play((string)lang.SelectedItem); };
-        var inst = new Button { Text = "Установить/обновить мод", AutoSize = true, Height = 30 };
+        var inst = new Button { Text = L("Install/update mod", "Установить/обновить мод"), AutoSize = true, Height = 30 };
         inst.Click += delegate { Install(); };
-        var uninst = new Button { Text = "Удалить мод", AutoSize = true, Height = 30 };
+        var uninst = new Button { Text = L("Uninstall mod", "Удалить мод"), AutoSize = true, Height = 30 };
         uninst.Click += delegate { Uninstall(); };
-        var resetPb = new Button { Text = "Сбросить PB", AutoSize = true, Height = 30 };
+        var resetPb = new Button { Text = L("Reset PBs", "Сбросить PB"), AutoSize = true, Height = 30 };
         resetPb.Click += delegate {
-            if (MessageBox.Show("Удалить все сохранённые PB по картам?", Text, MessageBoxButtons.YesNo) == DialogResult.Yes) File.Delete(P("srmod_pb.ini"));
+            if (MessageBox.Show(L("Delete all saved per-map PBs?", "Удалить все сохранённые PB по картам?"), Text, MessageBoxButtons.YesNo) == DialogResult.Yes) File.Delete(P("srmod_pb.ini"));
         };
-        top.Controls.AddRange(new Control[] { new Label { Text = "Категория:", AutoSize = true, Margin = new Padding(3, 8, 0, 0) }, cat,
-            new Label { Text = "Язык:", AutoSize = true, Margin = new Padding(8, 8, 0, 0) }, lang, play, inst, uninst, resetPb });
+        var ui = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 90, Margin = new Padding(16, 3, 3, 3) };
+        ui.Items.AddRange(new object[] { "English", "Русский" });
+        ui.SelectedIndex = Ru ? 1 : 0;
+        ui.SelectedIndexChanged += delegate { Ini.Set("launcher", "ui", ui.SelectedIndex == 1 ? "ru" : "en"); Application.Restart(); };
+        top.Controls.AddRange(new Control[] { new Label { Text = L("Category:", "Категория:"), AutoSize = true, Margin = new Padding(3, 8, 0, 0) }, cat,
+            new Label { Text = L("Game language:", "Язык:"), AutoSize = true, Margin = new Padding(8, 8, 0, 0) }, lang, play, inst, uninst, resetPb, ui });
 
         status.Dock = DockStyle.Bottom; status.Height = 24; status.Padding = new Padding(6, 4, 0, 0);
 
@@ -121,7 +138,7 @@ class LauncherForm : Form {
 
     // ---- Widgets tab: list + properties + draggable 16:9 preview ----
     TabPage WidgetsTab() {
-        var page = new TabPage("Оверлей");
+        var page = new TabPage(L("Overlay", "Оверлей"));
         var left = new Panel { Dock = DockStyle.Left, Width = 260, Padding = new Padding(6) };
         list.Dock = DockStyle.Top; list.Height = 260;
         foreach (var w in widgets) list.Items.Add(w.Id, w.On);
@@ -143,15 +160,15 @@ class LauncherForm : Form {
         labelBox.TextChanged += delegate { if (!loading && Sel != null) { Sel.Label = labelBox.Text; SaveWidget(Sel); } };
         sizeBox.ValueChanged += delegate { if (!loading && Sel != null) { Sel.Size = (int)sizeBox.Value; SaveWidget(Sel); } };
         anchorBox.SelectedIndexChanged += delegate { if (!loading && Sel != null) { Sel.Anchor = anchorBox.SelectedIndex; SaveWidget(Sel); } };
-        colorBtn.Text = "Цвет…";
+        colorBtn.Text = L("Color…", "Цвет…");
         colorBtn.Click += delegate {
             if (Sel == null) return;
             var d = new ColorDialog { Color = Sel.Color, FullOpen = true };
             if (d.ShowDialog() == DialogResult.OK) { Sel.Color = Color.FromArgb(255, d.Color); SaveWidget(Sel); LoadProps(); }
         };
-        AddRow(props, "Подпись", labelBox); AddRow(props, "Размер (px @1080p)", sizeBox);
-        AddRow(props, "Привязка", anchorBox); AddRow(props, "", colorBtn);
-        props.Controls.Add(new Label { Text = "Тащи виджет мышью в превью.\nПозиция хранится в долях экрана,\nподходит под любое разрешение.", AutoSize = true, ForeColor = Color.Gray }, 0, 4);
+        AddRow(props, L("Label", "Подпись"), labelBox); AddRow(props, L("Size (px @1080p)", "Размер (px @1080p)"), sizeBox);
+        AddRow(props, L("Anchor", "Привязка"), anchorBox); AddRow(props, "", colorBtn);
+        props.Controls.Add(new Label { Text = L("Drag widgets in the preview.\nPositions are stored as screen fractions,\nso they fit any resolution.", "Тащи виджет мышью в превью.\nПозиция хранится в долях экрана,\nподходит под любое разрешение."), AutoSize = true, ForeColor = Color.Gray }, 0, 4);
         props.SetColumnSpan(props.GetControlFromPosition(0, 4), 2);
         left.Controls.Add(props); left.Controls.Add(list);
 
@@ -241,38 +258,38 @@ class LauncherForm : Form {
 
     // ---- General / keys / cheat tabs ----
     TabPage GeneralTab() {
-        var page = new TabPage("Общие");
+        var page = new TabPage(L("General", "Общие"));
         var t = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(12), AutoScroll = true };
         var dec = new NumericUpDown { Minimum = 0, Maximum = 3, Value = Math.Max(0, Math.Min(3, Ini.GetI("general", "decimals", 2))) };
         dec.ValueChanged += delegate { Ini.Set("general", "decimals", (int)dec.Value); };
-        AddRow(t, "Знаков после точки (0–3)", dec);
-        AddCheck(t, "Всегда показывать часы", "general", "hours_always", 0);
-        AddCheck(t, "Тень под текстом", "general", "shadow", 1);
-        AddCheck(t, "Автостарт рана при загрузке стартовой карты", "general", "auto_start", 1);
+        AddRow(t, L("Decimal places (0–3)", "Знаков после точки (0–3)"), dec);
+        AddCheck(t, L("Always show hours", "Всегда показывать часы"), "general", "hours_always", 0);
+        AddCheck(t, L("Text shadow", "Тень под текстом"), "general", "shadow", 1);
+        AddCheck(t, L("Auto start/reset run when the start mission loads", "Автостарт рана при загрузке стартовой карты"), "general", "auto_start", 1);
         var start = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
-        for (int i = 0; i < Missions.Length; i += 2) start.Items.Add(Missions[i + 1] + "  (" + Missions[i] + ")");
+        for (int i = 0; i < Missions.Length; i += 3) start.Items.Add(Missions[i + (Ru ? 2 : 1)] + "  (" + Missions[i] + ")");
         int cur = Array.IndexOf(Missions, Ini.Get("general", "start_map", "trainyard"));
-        start.SelectedIndex = cur >= 0 && cur % 2 == 0 ? cur / 2 : Array.IndexOf(Missions, "trainyard") / 2;
-        start.SelectedIndexChanged += delegate { Ini.Set("general", "start_map", Missions[start.SelectedIndex * 2]); };
-        AddRow(t, "Стартовая миссия", start); start.Width = 320;
+        start.SelectedIndex = cur >= 0 && cur % 3 == 0 ? cur / 3 : 0;
+        start.SelectedIndexChanged += delegate { Ini.Set("general", "start_map", Missions[start.SelectedIndex * 3]); };
+        AddRow(t, L("Start mission", "Стартовая миссия"), start); start.Width = 320;
         var font = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
         foreach (var fam in FontFamily.Families) font.Items.Add(fam.Name);
         font.SelectedItem = Ini.Get("general", "font", "Consolas");
         font.SelectedIndexChanged += delegate { Ini.Set("general", "font", "\"" + font.SelectedItem + "\""); preview.Invalidate(); };
-        AddRow(t, "Шрифт", font); font.Width = 220;
+        AddRow(t, L("Font", "Шрифт"), font); font.Width = 220;
         return page.With(t);
     }
 
     TabPage KeysTab() {
-        var page = new TabPage("Хоткеи");
+        var page = new TabPage(L("Hotkeys", "Хоткеи"));
         var t = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(12) };
         for (int i = 0; i < Keys.Length; i++) {
             string key = Keys[i];
             var b = new Button { Width = 160, Text = ((Keys)Ini.GetI("keys", key, (int)KeyDefaults[i])).ToString() };
-            b.Click += delegate { b.Text = "Нажми клавишу…"; b.Focus(); };
+            b.Click += delegate { b.Text = L("Press a key…", "Нажми клавишу…"); b.Focus(); };
             b.PreviewKeyDown += (s, e) => e.IsInputKey = true;
             b.KeyDown += (s, e) => {
-                if (b.Text != "Нажми клавишу…") return;
+                if (b.Text != L("Press a key…", "Нажми клавишу…")) return;
                 Ini.Set("keys", key, (int)e.KeyCode); b.Text = e.KeyCode.ToString(); e.Handled = true;
             };
             AddRow(t, KeyTitles[i], b);
@@ -283,11 +300,11 @@ class LauncherForm : Form {
     TabPage CheatTab() {
         var page = new TabPage("Cheat%");
         var t = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(12) };
-        AddCheck(t, "Бессмертие (god) всё время", "cheat", "god", 1);
-        AddText(t, "Команды после загрузки карты (через ;)", "cheat", "commands", "give all;giveAllPowerUpgrades;momoney", 420);
-        AddText(t, "Команда телепорта (%f = x y z)", "cheat", "teleport_cmd", "script $player1.setOrigin('%.3f %.3f %.3f');", 420);
+        AddCheck(t, L("God mode always on", "Бессмертие (god) всё время"), "cheat", "god", 1);
+        AddText(t, L("Commands after each map load (separated by ;)", "Команды после загрузки карты (через ;)"), "cheat", "commands", "give all;giveAllPowerUpgrades;momoney", 420);
+        AddText(t, L("Teleport command (%f = x y z)", "Команда телепорта (%f = x y z)"), "cheat", "teleport_cmd", "script $player1.setOrigin('%.3f %.3f %.3f');", 420);
         t.Controls.Add(new Label { AutoSize = true, ForeColor = Color.Gray, Text =
-            "Полезные команды игры: give all, giveAllPowerUpgrades, givePowers, momoney, giveGold,\n" +
+            L("Useful game commands: give all, giveAllPowerUpgrades, givePowers, momoney, giveGold,\n", "Полезные команды игры: give all, giveAllPowerUpgrades, givePowers, momoney, giveGold,\n") +
             "giveAllIntel, notarget, undying, killActiveEnemies, gotoMission." }, 0, t.RowCount++);
         t.SetColumnSpan(t.GetControlFromPosition(0, t.RowCount - 1), 2);
         return page.With(t);
@@ -309,29 +326,29 @@ class LauncherForm : Form {
     bool Installed { get { return File.Exists(P("binkw32_orig.dll")); } }
 
     void UpdateStatus() {
-        status.Text = !File.Exists(P("Wolf2.exe")) ? "Лаунчер должен лежать в папке SP рядом с Wolf2.exe" :
-                      Installed ? "Мод установлен. Настройки применяются в игре сразу." : "Мод не установлен.";
+        status.Text = !File.Exists(P("Wolf2.exe")) ? L("Put the launcher into the SP folder next to Wolf2.exe", "Лаунчер должен лежать в папке SP рядом с Wolf2.exe") :
+                      Installed ? L("Mod installed. Settings apply to the running game instantly.", "Мод установлен. Настройки применяются в игре сразу.") : L("Mod not installed.", "Мод не установлен.");
     }
 
     bool Install() {
         try {
-            if (!File.Exists(P("srmod.dll"))) throw new Exception("Нет srmod.dll рядом с лаунчером.");
+            if (!File.Exists(P("srmod.dll"))) throw new Exception(L("srmod.dll is missing next to the launcher.", "Нет srmod.dll рядом с лаунчером."));
             if (!Installed) File.Move(P("binkw32.dll"), P("binkw32_orig.dll"));
             File.Copy(P("srmod.dll"), P("binkw32.dll"), true);
             UpdateStatus(); return true;
-        } catch (Exception ex) { MessageBox.Show("Не удалось установить: " + ex.Message, Text); return false; }
+        } catch (Exception ex) { MessageBox.Show(L("Install failed: ", "Не удалось установить: ") + ex.Message, Text); return false; }
     }
 
     void Uninstall() {
         try {
             if (!Installed) return;
             File.Delete(P("binkw32.dll")); File.Move(P("binkw32_orig.dll"), P("binkw32.dll"));
-        } catch (Exception ex) { MessageBox.Show("Не удалось удалить: " + ex.Message, Text); }
+        } catch (Exception ex) { MessageBox.Show(L("Uninstall failed: ", "Не удалось удалить: ") + ex.Message, Text); }
         UpdateStatus();
     }
 
     void Play(string lang) {
-        if (Process.GetProcessesByName("Wolf2").Length > 0) { MessageBox.Show("Игра уже запущена.", Text); return; }
+        if (Process.GetProcessesByName("Wolf2").Length > 0) { MessageBox.Show(L("The game is already running.", "Игра уже запущена."), Text); return; }
         if (!Install()) return;
         Process.Start(new ProcessStartInfo(P("Wolf2.exe"), "+set com_allowconsole 1 +set com_SingleDeclFile 0 +set sys_lang \"" + lang + "\"") { WorkingDirectory = dir });
     }
