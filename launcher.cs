@@ -48,9 +48,31 @@ class LauncherForm : Form {
     static readonly string[] Labels = { "", "Speed ", "RTA ", "IGT ", "Map RTA ", "Map IGT ", "PB ", "Loads ", "Deaths ", "", "", "" };
     static readonly string[] Samples = { "X 1234.5  Y -678.9  Z 12.0", "320 u/s (max 455)", "1:23:45.67", "1:20:02.10", "4:05.33", "3:58.90", "4:01.00  -0:02.10", "12 (3:43.57)", "3", "Any%", "trainyard",
         "trainyard   4:01.20  -0:01.20   4:01.20\nfarm       12:30.00  +0:03.10  16:31.20\nchurch                -0:00.40  19:02.00" };
-    static readonly string[] Keys = { "toggle", "start_stop", "reset", "category", "save_pos", "teleport" };
-    static readonly string[] KeyTitles = { L("Show/hide overlay", "Показать/скрыть оверлей"), L("Start/finish run", "Старт/финиш рана"), L("Reset", "Сброс"), L("Switch category", "Сменить категорию"), L("Save position", "Сохранить позицию"), L("Teleport to position", "Телепорт на позицию") };
-    static readonly Keys[] KeyDefaults = { System.Windows.Forms.Keys.F6, System.Windows.Forms.Keys.F7, System.Windows.Forms.Keys.F8, System.Windows.Forms.Keys.F10, System.Windows.Forms.Keys.NumPad7, System.Windows.Forms.Keys.NumPad9 };
+    static readonly string[] Keys = { "toggle", "start_stop", "reset", "category", "save_pos", "teleport", "quick_save", "quick_load", "restart_cp", "menu" };
+    static readonly string[] KeyTitles = {
+        L("Show/hide overlay", "Показать/скрыть оверлей"),
+        L("Start/finish run", "Старт/финиш рана"),
+        L("Reset", "Сброс"),
+        L("Switch category", "Сменить категорию"),
+        L("Save position", "Сохранить позицию"),
+        L("Teleport to position", "Телепорт на позицию"),
+        L("Quick save", "Быстрое сохранение"),
+        L("Quick load", "Быстрая загрузка"),
+        L("Restart checkpoint", "Перезапуск чекпоинта"),
+        L("In-game menu", "Меню в игре")
+    };
+    static readonly Keys[] KeyDefaults = {
+        System.Windows.Forms.Keys.F6,
+        System.Windows.Forms.Keys.F7,
+        System.Windows.Forms.Keys.F8,
+        System.Windows.Forms.Keys.F10,
+        System.Windows.Forms.Keys.NumPad7,
+        System.Windows.Forms.Keys.NumPad9,
+        System.Windows.Forms.Keys.F5,
+        System.Windows.Forms.Keys.F9,
+        System.Windows.Forms.Keys.F11,
+        System.Windows.Forms.Keys.F1
+    };
     // Map file name (as the mod reads it), English and Russian display names.
     static readonly string[] Missions = {
         "trainyard", "Train Station", "Вокзал", "farm", "Farm", "Укреплённая ферма", "caverns", "Caverns", "Пещеры",
@@ -364,7 +386,12 @@ class LauncherForm : Form {
         lines.ValueChanged += delegate { Ini.Set("general", "split_lines", (int)lines.Value); };
         AddRow(t, L("Split rows shown", "Строк в сплитах"), lines);
         AddCheck(t, L("Text shadow", "Тень под текстом"), "general", "shadow", 1);
-        AddCheck(t, L("Auto start/reset run when the start mission loads", "Автостарт рана при загрузке стартовой карты"), "general", "auto_start", 1);
+        var fov = new NumericUpDown { Minimum = 60, Maximum = 120, Value = Math.Max(60, Math.Min(120, Ini.GetI("game", "fov", 80))) };
+        fov.ValueChanged += delegate { Ini.Set("game", "fov", (int)fov.Value); };
+        AddRow(t, L("Field of View (FOV)", "Угол обзора (FOV)"), fov);
+        AddCheck(t, L("Head and weapon bobbing", "Раскачивание камеры и оружия"), "game", "head_bob", 1);
+        AddCheck(t, L("Auto-start on campaign cutscene (wolf_campaign_start)", "Автостарт на катсцене кампании (wolf_campaign_start)"), "general", "auto_start_cutscene", 1);
+        AddCheck(t, L("Auto-start on map load (IL practice only)", "Автостарт на карте (только для тренировки уровней)"), "general", "auto_start_map", 0);
         var start = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
         for (int i = 0; i < Missions.Length; i += 3) start.Items.Add(Missions[i + (Ru ? 2 : 1)] + "  (" + Missions[i] + ")");
         int cur = Array.IndexOf(Missions, Ini.Get("general", "start_map", "trainyard"));

@@ -9,7 +9,7 @@ if not exist out mkdir out
 cl /nologo /EHsc /O2 timer_test.cpp /Fe:out\timer_test.exe /Fo:out\ >nul || exit /b 1
 out\timer_test.exe || exit /b 1
 
-cl /nologo /EHsc /O2 /MT /LD /D_CRT_SECURE_NO_WARNINGS mod.cpp /Fe:out\srmod.dll /Fo:out\ /link /DEF:binkw32.def user32.lib >nul || exit /b 1
+cl /nologo /EHsc /O2 /MT /LD /D_CRT_SECURE_NO_WARNINGS /Iimgui /Iimgui\backends mod.cpp imgui\imgui.cpp imgui\imgui_draw.cpp imgui\imgui_tables.cpp imgui\imgui_widgets.cpp imgui\backends\imgui_impl_dx9.cpp imgui\backends\imgui_impl_win32.cpp /Fe:out\srmod.dll /Fo:out\ /link /DEF:binkw32.def user32.lib d3d9.lib >nul || exit /b 1
 
 "%WINDIR%\Microsoft.NET\Framework\v4.0.30319\csc.exe" /nologo /target:winexe /platform:anycpu /optimize /codepage:65001 /out:out\SrmodLauncher.exe launcher.cs || exit /b 1
 

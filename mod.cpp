@@ -1,10 +1,13 @@
-// srmod: Wolfenstein (2009) speedrun overlay. Loaded as a binkw32.dll proxy (exports forwarded
-// to binkw32_orig.dll via binkw32.def). A poll thread reads game memory and drives the timers;
-// a hooked IDirect3DDevice9::Present draws the overlay.
+// srmod: Wolfenstein (2009) speedrun overlay and in-game configurator.
+// Loaded as a binkw32.dll proxy (exports forwarded to binkw32_orig.dll via binkw32.def).
+// A poll thread reads game memory and drives the timers;
+// a hooked IDirect3DDevice9::Present draws the overlay and the in-game settings menu.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <d3d9.h>
 #include <timeapi.h>
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -13,31 +16,39 @@
 #include <mutex>
 #include <string>
 #include <vector>
+
+#include "imgui.h"
+#include "backends/imgui_impl_dx9.h"
+#include "backends/imgui_impl_win32.h"
+
 #include "timer.h"
 
 #pragma comment(lib, "winmm.lib")
 
+// Forward declaration for ImGui Win32 message handler
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
 // ---- Addresses (Wolfenstein 1.21 SP, patched Gamex86.dll 6739216 bytes) -------------------
 // Gamex86.dll RVAs
-const DWORD RVA_GAMELOCAL      = 0x61f0b0;  // idGameLocal gameLocal
-const DWORD RVA_CMDSYSTEM      = 0x61f050;  // idCmdSystem *cmdSystem
-const DWORD RVA_PHYS_GETORIGIN = 0x2f8760;  // idPhysics_Player::GetOrigin (shared by rvHkPhysics_Player)
-const DWORD GL_LOCALCLIENT     = 0x63d4c;   // int localClientNum
-const DWORD GL_ENTITIES        = 0x4d0;     // idEntity *entities[]
-const DWORD GL_MAPNAME         = 0x63e28;   // idStr mapFileName data pointer
-const DWORD GL_INCINEMATIC     = 0x63bdc;   // bool inCinematic (set by SetCamera)
-const DWORD RVA_MISSIONCOMPLETE = 0x875e8c; // mission complete menu object (from the community ASL)
-const DWORD MC_ACTIVE          = 0x268;     // bool: mission complete screen shown
-const DWORD PL_PHYSICS         = 0x2ec;     // idPhysics *physics
-const DWORD PL_HEALTH          = 0xd8;      // float health
-const DWORD PL_GODMODE         = 0x5fa;     // bool godmode
-const DWORD PH_ORIGIN          = 0x9c;      // idVec3 current.origin
-const DWORD PH_VELOCITY        = 0xa8;      // idVec3 current.velocity
-const int   CMD_BUFFERTEXT_IDX = 8;         // idCmdSystem::BufferCommandText vtable slot
-const int   CMD_EXEC_APPEND    = 2;
+const DWORD RVA_GAMELOCAL       = 0x61f0b0;  // idGameLocal gameLocal
+const DWORD RVA_CMDSYSTEM       = 0x61f050;  // idCmdSystem *cmdSystem
+const DWORD RVA_PHYS_GETORIGIN  = 0x2f8760;  // idPhysics_Player::GetOrigin (shared by rvHkPhysics_Player)
+const DWORD GL_LOCALCLIENT      = 0x63d4c;   // int localClientNum
+const DWORD GL_ENTITIES         = 0x4d0;     // idEntity *entities[]
+const DWORD GL_MAPNAME          = 0x63e28;   // idStr mapFileName data pointer
+const DWORD GL_INCINEMATIC      = 0x63bdc;   // bool inCinematic (set by SetCamera)
+const DWORD RVA_MISSIONCOMPLETE = 0x875e8c;  // mission complete menu object (from the community ASL)
+const DWORD MC_ACTIVE           = 0x268;     // bool: mission complete screen shown
+const DWORD PL_PHYSICS          = 0x2ec;     // idPhysics *physics
+const DWORD PL_HEALTH           = 0xd8;      // float health
+const DWORD PL_GODMODE          = 0x5fa;     // bool godmode
+const DWORD PH_ORIGIN           = 0x9c;      // idVec3 current.origin
+const DWORD PH_VELOCITY         = 0xa8;      // idVec3 current.velocity
+const int   CMD_BUFFERTEXT_IDX  = 8;         // idCmdSystem::BufferCommandText vtable slot
+const int   CMD_EXEC_APPEND     = 2;
 // Wolf2.exe (fixed base 0x10000000)
-const DWORD WOLF_SESSION_VT    = 0x105e78cc; // idSessionLocal vtable; the object lives in .data
-const DWORD SESS_INSIDE_MAPCHANGE = 0xd;     // bool insideExecuteMapChange (set during all loads)
+const DWORD WOLF_SESSION_VT     = 0x105e78cc; // idSessionLocal vtable; the object lives in .data
+const DWORD SESS_INSIDE_MAPCHANGE = 0xd;      // bool insideExecuteMapChange (set during all loads)
 
 // Position-independent code bytes used as a version check.
 struct Sig { DWORD rva; const char* bytes; int len; };
@@ -66,27 +77,75 @@ enum WidgetId { W_COORDS, W_SPEED, W_RTA, W_IGT, W_MAP_RTA, W_MAP_IGT, W_PB, W_L
                 W_CATEGORY, W_MAP, W_SPLITS, W_COUNT };
 const char* kWidgetNames[W_COUNT] = {"coords", "speed", "total_rta", "total_igt", "map_rta", "map_igt",
                                      "pb", "loads", "deaths", "category", "map", "splits"};
-const char* kWidgetLabels[W_COUNT] = {"", "Speed ", "RTA ", "IGT ", "Map RTA ", "Map IGT ",
-                                      "PB ", "Loads ", "Deaths ", "", "", ""};
-
+const char* kWidgetLabels[W_COUNT] = {"", "Speed: ", "RTA: ", "IGT: ", "Map RTA: ", "Map IGT: ",
+                                      "PB: ", "Loads: ", "Deaths: ", "", "", ""};
+const char* kWidgetDisplayNames[W_COUNT] = {
+    "Coordinates (X, Y, Z)", "Speedometer", "Total RTA", "Total IGT", "Map RTA", "Map IGT",
+    "Current Map PB & Live Delta", "Loads Counter", "Deaths Counter", "Category Name", "Map Name", "Splits Table"
+};
 
 struct Widget {
     bool on; float x, y; int anchor, size; std::string label;
     D3DCOLOR color, labelColor, bg;                    // value text, label text, background (0 = none)
     D3DCOLOR nameColor, segColor, timeColor, aheadColor, behindColor, goldColor;  // splits only
 };
-enum Key { K_TOGGLE, K_STARTSTOP, K_RESET, K_CATEGORY, K_SAVEPOS, K_TELEPORT, K_COUNT };
-const char* kKeyNames[K_COUNT] = {"toggle", "start_stop", "reset", "category", "save_pos", "teleport"};
-const int kKeyDefaults[K_COUNT] = {VK_F6, VK_F7, VK_F8, VK_F10, VK_NUMPAD7, VK_NUMPAD9};
+
+enum Key {
+    K_TOGGLE, K_STARTSTOP, K_RESET, K_CATEGORY, K_SAVEPOS, K_TELEPORT,
+    K_QUICKSAVE, K_QUICKLOAD, K_RESTART_CP, K_MENU,
+    K_COUNT
+};
+const char* kKeyNames[K_COUNT] = {
+    "toggle", "start_stop", "reset", "category", "save_pos", "teleport",
+    "quick_save", "quick_load", "restart_cp", "menu"
+};
+const int kKeyDefaults[K_COUNT] = {
+    VK_F6, VK_F7, VK_F8, VK_F10, VK_NUMPAD7, VK_NUMPAD9,
+    VK_F5, VK_F9, VK_F11, VK_F1
+};
+const char* kKeyTitles[K_COUNT] = {
+    "Show/hide overlay", "Start/finish run", "Reset timer", "Switch category",
+    "Save position (practice)", "Teleport to position",
+    "Quick Save", "Quick Load", "Restart Checkpoint", "Open / Close In-Game Menu"
+};
 
 struct Settings {
     Widget w[W_COUNT];
     int keys[K_COUNT];
     int decimals = 2, splitLines = 10;
-    bool hoursAlways = false, autoStart = true, cheatGod = true, shadow = true;
+    bool hoursAlways = false, shadow = true;
+    bool autoStartCutscene = true; // Auto-reset and start run on wolf_campaign_start cutscene
+    bool autoStartMap = false;      // Auto-reset when entering start_map (IL speedruns only)
+    bool cheatGod = true;
+    int fov = 80;
+    bool headBob = true;
+    std::string language = "english";
     std::string font = "Consolas", category = "any", startMap = "trainyard";
     std::string cheatCmds, teleportCmd;
 };
+
+const int kMissionCount = 12;
+const char* kMissionIds[kMissionCount] = {
+    "trainyard", "downtown", "tavern", "digsite", "church", "farm",
+    "hospital", "cannery", "castle", "airfield", "zeppelin", "blacksun"
+};
+const char* kMissionNames[kMissionCount] = {
+    "Train Station (Вокзал)",
+    "Downtown (Центр города)",
+    "Tavern (Таверна)",
+    "Dig Site (Раскопки)",
+    "Church (Церковь)",
+    "Farm (Ферма)",
+    "Hospital (Больница)",
+    "Cannery (Консервный завод)",
+    "Castle (Замок)",
+    "Airfield (Аэродром)",
+    "Zeppelin (Дирижабль)",
+    "Black Sun (Чёрное Солнце)",
+};
+
+const char* kLanguages[] = { "english", "russian", "french", "german", "italian", "spanish", "polish" };
+const int kLangCount = 7;
 
 static char g_dir[MAX_PATH], g_ini[MAX_PATH], g_pbIni[MAX_PATH], g_log[MAX_PATH];
 static std::mutex g_mx;          // guards everything below
@@ -99,6 +158,15 @@ static double g_pb = -1;          // PB of current map in current category, -1 =
 static std::vector<Split> g_pbSplits;  // splits of the best full run in current category
 static volatile LONG g_binkOpen;  // open Bink videos (pre-rendered cutscenes)
 static std::string g_msg; static DWORD g_msgUntil;
+
+// In-Game Menu state
+static bool g_imguiInit = false;
+static HWND g_gameHwnd = nullptr;
+static WNDPROC g_origWndProc = nullptr;
+static bool g_menuOpen = false;
+static int g_rebindKeyIndex = -1;
+static int g_selectedWidget = 0;
+static bool g_confirmResetPb = false;
 
 static void Log(const char* fmt, ...) {
     FILE* f = fopen(g_log, "a"); if (!f) return;
@@ -119,7 +187,7 @@ static Settings LoadSettings() {
         std::string sec = std::string("widget.") + kWidgetNames[i];
         Widget& w = s.w[i];
         w.on = IniI(sec.c_str(), "enabled", i != W_MAP) != 0;
-        bool splits = i == W_SPLITS;  // splits default to the top right corner
+        bool splits = i == W_SPLITS;
         w.x = IniF(sec.c_str(), "x", splits ? 0.99f : 0.01f);
         w.y = IniF(sec.c_str(), "y", splits ? 0.02f : 0.02f + 0.03f * i);
         w.anchor = IniI(sec.c_str(), "anchor", splits ? 1 : 0);
@@ -127,7 +195,7 @@ static Settings LoadSettings() {
         auto C = [&](const char* key, const char* def) { return (D3DCOLOR)strtoul(IniS(sec.c_str(), key, def).c_str(), nullptr, 16); };
         w.color = C("color", "FFFFFFFF");
         char hex[16]; snprintf(hex, sizeof hex, "%08X", w.color);
-        w.labelColor = C("label_color", hex);  // defaults to the value color
+        w.labelColor = C("label_color", hex);
         w.bg = C("bg", "00000000");
         w.nameColor = C("name_color", hex); w.segColor = C("seg_color", hex); w.timeColor = C("time_color", hex);
         w.aheadColor = C("ahead_color", "FF40E040"); w.behindColor = C("behind_color", "FFE04848");
@@ -138,15 +206,64 @@ static Settings LoadSettings() {
     s.decimals = IniI("general", "decimals", 2);
     s.splitLines = IniI("general", "split_lines", 10);
     s.hoursAlways = IniI("general", "hours_always", 0) != 0;
-    s.autoStart = IniI("general", "auto_start", 1) != 0;
+    s.autoStartCutscene = IniI("general", "auto_start_cutscene", 1) != 0;
+    s.autoStartMap = IniI("general", "auto_start_map", 0) != 0;
     s.shadow = IniI("general", "shadow", 1) != 0;
     s.font = IniS("general", "font", "Consolas");
     s.category = IniS("general", "category", "any");
     s.startMap = IniS("general", "start_map", "trainyard");
+    s.fov = IniI("game", "fov", 80);
+    s.headBob = IniI("game", "head_bob", 1) != 0;
+    s.language = IniS("launcher", "language", "english");
     s.cheatGod = IniI("cheat", "god", 1) != 0;
     s.cheatCmds = IniS("cheat", "commands", "give all;giveAllPowerUpgrades;momoney");
     s.teleportCmd = IniS("cheat", "teleport_cmd", "script $player1.setOrigin('%.3f %.3f %.3f');");
     return s;
+}
+
+static void SaveSettings(const Settings& s) {
+    for (int i = 0; i < W_COUNT; i++) {
+        std::string sec = std::string("widget.") + kWidgetNames[i];
+        const Widget& w = s.w[i];
+        WritePrivateProfileStringA(sec.c_str(), "enabled", w.on ? "1" : "0", g_ini);
+        char buf[64];
+        snprintf(buf, sizeof buf, "%.4f", w.x); WritePrivateProfileStringA(sec.c_str(), "x", buf, g_ini);
+        snprintf(buf, sizeof buf, "%.4f", w.y); WritePrivateProfileStringA(sec.c_str(), "y", buf, g_ini);
+        WritePrivateProfileStringA(sec.c_str(), "anchor", std::to_string(w.anchor).c_str(), g_ini);
+        WritePrivateProfileStringA(sec.c_str(), "size", std::to_string(w.size).c_str(), g_ini);
+        snprintf(buf, sizeof buf, "%08X", w.color); WritePrivateProfileStringA(sec.c_str(), "color", buf, g_ini);
+        snprintf(buf, sizeof buf, "%08X", w.labelColor); WritePrivateProfileStringA(sec.c_str(), "label_color", buf, g_ini);
+        snprintf(buf, sizeof buf, "%08X", w.bg); WritePrivateProfileStringA(sec.c_str(), "bg", buf, g_ini);
+        if (i == W_SPLITS) {
+            snprintf(buf, sizeof buf, "%08X", w.nameColor); WritePrivateProfileStringA(sec.c_str(), "name_color", buf, g_ini);
+            snprintf(buf, sizeof buf, "%08X", w.segColor); WritePrivateProfileStringA(sec.c_str(), "seg_color", buf, g_ini);
+            snprintf(buf, sizeof buf, "%08X", w.timeColor); WritePrivateProfileStringA(sec.c_str(), "time_color", buf, g_ini);
+            snprintf(buf, sizeof buf, "%08X", w.aheadColor); WritePrivateProfileStringA(sec.c_str(), "ahead_color", buf, g_ini);
+            snprintf(buf, sizeof buf, "%08X", w.behindColor); WritePrivateProfileStringA(sec.c_str(), "behind_color", buf, g_ini);
+            snprintf(buf, sizeof buf, "%08X", w.goldColor); WritePrivateProfileStringA(sec.c_str(), "gold_color", buf, g_ini);
+        }
+        std::string qlabel = "\"" + w.label + "\"";
+        WritePrivateProfileStringA(sec.c_str(), "label", qlabel.c_str(), g_ini);
+    }
+    for (int i = 0; i < K_COUNT; i++) {
+        WritePrivateProfileStringA("keys", kKeyNames[i], std::to_string(s.keys[i]).c_str(), g_ini);
+    }
+    WritePrivateProfileStringA("general", "decimals", std::to_string(s.decimals).c_str(), g_ini);
+    WritePrivateProfileStringA("general", "split_lines", std::to_string(s.splitLines).c_str(), g_ini);
+    WritePrivateProfileStringA("general", "hours_always", s.hoursAlways ? "1" : "0", g_ini);
+    WritePrivateProfileStringA("general", "auto_start_cutscene", s.autoStartCutscene ? "1" : "0", g_ini);
+    WritePrivateProfileStringA("general", "auto_start_map", s.autoStartMap ? "1" : "0", g_ini);
+    WritePrivateProfileStringA("general", "shadow", s.shadow ? "1" : "0", g_ini);
+    std::string qfont = "\"" + s.font + "\"";
+    WritePrivateProfileStringA("general", "font", qfont.c_str(), g_ini);
+    WritePrivateProfileStringA("general", "category", s.category.c_str(), g_ini);
+    WritePrivateProfileStringA("general", "start_map", s.startMap.c_str(), g_ini);
+    WritePrivateProfileStringA("game", "fov", std::to_string(s.fov).c_str(), g_ini);
+    WritePrivateProfileStringA("game", "head_bob", s.headBob ? "1" : "0", g_ini);
+    WritePrivateProfileStringA("launcher", "language", s.language.c_str(), g_ini);
+    WritePrivateProfileStringA("cheat", "god", s.cheatGod ? "1" : "0", g_ini);
+    WritePrivateProfileStringA("cheat", "commands", s.cheatCmds.c_str(), g_ini);
+    WritePrivateProfileStringA("cheat", "teleport_cmd", s.teleportCmd.c_str(), g_ini);
 }
 
 static const char* CategoryName(const std::string& c) { return c == "cheat" ? "Cheat%" : "Any%"; }
@@ -156,7 +273,6 @@ static double ReadPb(const std::string& cat, const std::string& map) {
     return v.empty() ? -1 : atof(v.c_str());
 }
 
-// Best full run: [splits.<category>] n=, map0=, time0=, ... in srmod_pb.ini
 static std::vector<Split> ReadPbSplits(const std::string& cat) {
     std::string sec = "splits." + cat;
     std::vector<Split> v;
@@ -171,7 +287,7 @@ static std::vector<Split> ReadPbSplits(const std::string& cat) {
 
 static void WritePbSplits(const std::string& cat, const std::vector<Split>& v) {
     std::string sec = "splits." + cat;
-    WritePrivateProfileStringA(sec.c_str(), nullptr, nullptr, g_pbIni);  // drop old run
+    WritePrivateProfileStringA(sec.c_str(), nullptr, nullptr, g_pbIni);
     WritePrivateProfileStringA(sec.c_str(), "n", std::to_string(v.size()).c_str(), g_pbIni);
     for (size_t i = 0; i < v.size(); i++) {
         char t[32]; snprintf(t, sizeof t, "%.3f", v[i].time);
@@ -211,7 +327,6 @@ static BYTE* LocalPlayer(BYTE* gx) {
     return *(BYTE**)(gl + GL_ENTITIES + idx * 4);
 }
 
-// SEH-guarded: pointers can be stale mid-load.
 static void ReadGame(Snapshot* s, bool writeGod) {
     memset(s, 0, sizeof *s);
     __try {
@@ -225,7 +340,7 @@ static void ReadGame(Snapshot* s, bool writeGod) {
         s->paused |= s->cinematic || s->mission;
         const char* m = *(const char**)(gx + RVA_GAMELOCAL + GL_MAPNAME);
         if (m) {
-            const char* base = m;  // "maps/game/trainyard.map" -> "trainyard"
+            const char* base = m;
             for (const char* c = m; *c && c - m < 256; c++) if (*c == '/' || *c == '\\') base = c + 1;
             int n = 0;
             while (base[n] && base[n] != '.' && n < 63) { s->map[n] = base[n]; n++; }
@@ -233,7 +348,7 @@ static void ReadGame(Snapshot* s, bool writeGod) {
         BYTE* pl = LocalPlayer(gx);
         if (!pl) return;
         BYTE* ph = *(BYTE**)(pl + PL_PHYSICS);
-        if (!ph || (*(DWORD**)ph)[38] != (DWORD)(gx + RVA_PHYS_GETORIGIN)) return;  // vtable slot 38 = GetOrigin
+        if (!ph || (*(DWORD**)ph)[38] != (DWORD)(gx + RVA_PHYS_GETORIGIN)) return;
         memcpy(s->pos, ph + PH_ORIGIN, 12);
         memcpy(s->vel, ph + PH_VELOCITY, 12);
         s->hp = *(float*)(pl + PL_HEALTH);
@@ -244,8 +359,6 @@ static void ReadGame(Snapshot* s, bool writeGod) {
     }
 }
 
-// ponytail: BufferCommandText is called from our thread, not the game thread; the engine's
-// command buffer has no lock. Fine for rare hotkey/cheat use; move into a game-thread hook if it ever races.
 static void ExecCommand(const std::string& text) {
     __try {
         BYTE* gx = (BYTE*)GetModuleHandleA("Gamex86.dll");
@@ -263,13 +376,11 @@ static void ExecCommandList(const std::string& list) {
     if (!buf.empty()) ExecCommand(buf + "\n");
 }
 
-// ---- Poll thread: timers, hotkeys, ini reload ------------------------------------------------
 static bool GameFocused() {
     DWORD pid = 0; GetWindowThreadProcessId(GetForegroundWindow(), &pid);
     return pid == GetCurrentProcessId();
 }
 
-// Final split; saves the map PB for the last map and the whole run as PB if faster. Caller holds g_mx.
 static void FinishRun() {
     bool clean = g_run.mapClean;
     std::string map = g_run.map; double mapIgt = g_run.mapIgt;
@@ -287,6 +398,112 @@ static void FinishRun() {
     } else Message("Run finished");
 }
 
+static const char* GetKeyDisplayName(int vk) {
+    static char buf[32];
+    if (vk >= VK_F1 && vk <= VK_F24) { snprintf(buf, sizeof buf, "F%d", vk - VK_F1 + 1); return buf; }
+    if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) { snprintf(buf, sizeof buf, "Num %d", vk - VK_NUMPAD0); return buf; }
+    if (vk >= '0' && vk <= '9') { snprintf(buf, sizeof buf, "%c", (char)vk); return buf; }
+    if (vk >= 'A' && vk <= 'Z') { snprintf(buf, sizeof buf, "%c", (char)vk); return buf; }
+    switch (vk) {
+    case VK_ESCAPE: return "Esc";
+    case VK_SPACE: return "Space";
+    case VK_TAB: return "Tab";
+    case VK_RETURN: return "Enter";
+    case VK_BACK: return "Backspace";
+    case VK_SHIFT: return "Shift";
+    case VK_CONTROL: return "Ctrl";
+    case VK_MENU: return "Alt";
+    case VK_PAUSE: return "Pause";
+    case VK_CAPITAL: return "Caps Lock";
+    case VK_PRIOR: return "Page Up";
+    case VK_NEXT: return "Page Down";
+    case VK_END: return "End";
+    case VK_HOME: return "Home";
+    case VK_LEFT: return "Left";
+    case VK_UP: return "Up";
+    case VK_RIGHT: return "Right";
+    case VK_DOWN: return "Down";
+    case VK_INSERT: return "Insert";
+    case VK_DELETE: return "Delete";
+    case VK_MULTIPLY: return "Num *";
+    case VK_ADD: return "Num +";
+    case VK_SUBTRACT: return "Num -";
+    case VK_DECIMAL: return "Num .";
+    case VK_DIVIDE: return "Num /";
+    case VK_OEM_3: return "~";
+    case VK_OEM_MINUS: return "-";
+    case VK_OEM_PLUS: return "=";
+    case VK_OEM_4: return "[";
+    case VK_OEM_6: return "]";
+    case VK_OEM_1: return ";";
+    case VK_OEM_7: return "'";
+    case VK_OEM_COMMA: return ",";
+    case VK_OEM_PERIOD: return ".";
+    case VK_OEM_2: return "/";
+    case 0: return "None";
+    default:
+        snprintf(buf, sizeof buf, "Key 0x%02X", vk);
+        return buf;
+    }
+}
+
+// Convert D3DCOLOR (0xAARRGGBB) to ImVec4 and back
+static ImVec4 D3DToImVec4(D3DCOLOR c) {
+    float a = ((c >> 24) & 0xFF) / 255.0f;
+    float r = ((c >> 16) & 0xFF) / 255.0f;
+    float g = ((c >> 8) & 0xFF) / 255.0f;
+    float b = (c & 0xFF) / 255.0f;
+    return ImVec4(r, g, b, a);
+}
+
+static D3DCOLOR ImVec4ToD3D(const ImVec4& v) {
+    int a = (int)(v.w * 255.0f + 0.5f);
+    int r = (int)(v.x * 255.0f + 0.5f);
+    int g = (int)(v.y * 255.0f + 0.5f);
+    int b = (int)(v.z * 255.0f + 0.5f);
+    if (a < 0) a = 0; if (a > 255) a = 255;
+    if (r < 0) r = 0; if (r > 255) r = 255;
+    if (g < 0) g = 0; if (g > 255) g = 255;
+    if (b < 0) b = 0; if (b > 255) b = 255;
+    return ((a & 0xFF) << 24) | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
+}
+
+// Window procedure hook for in-game menu input capture
+static LRESULT CALLBACK hkWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (g_rebindKeyIndex >= 0) {
+        if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) {
+            if (wParam != VK_ESCAPE) {
+                std::lock_guard<std::mutex> lk(g_mx);
+                g_set.keys[g_rebindKeyIndex] = (int)wParam;
+                SaveSettings(g_set);
+            }
+            g_rebindKeyIndex = -1;
+            return 0;
+        }
+    }
+
+    if (msg == WM_KEYDOWN && (int)wParam == g_set.keys[K_MENU]) {
+        g_menuOpen = !g_menuOpen;
+        return 0;
+    }
+
+    if (g_menuOpen) {
+        if (msg == WM_KEYDOWN && wParam == VK_ESCAPE) {
+            g_menuOpen = false;
+            return 0;
+        }
+        if (g_imguiInit && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
+            return 1;
+        // Suppress gameplay input when menu is active
+        if ((msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) ||
+            (msg >= WM_KEYFIRST && msg <= WM_KEYLAST)) {
+            return 0;
+        }
+    }
+    return CallWindowProcA(g_origWndProc, hwnd, msg, wParam, lParam);
+}
+
+// ---- Poll thread: timers, hotkeys, ini reload ------------------------------------------------
 static void Poll() {
     LARGE_INTEGER freq, last, now;
     QueryPerformanceFrequency(&freq); QueryPerformanceCounter(&last);
@@ -302,7 +519,7 @@ static void Poll() {
         double dt = double(now.QuadPart - last.QuadPart) / freq.QuadPart;
         last = now;
 
-        // Live reload of srmod.ini (written by the launcher or by us).
+        // Live reload of srmod.ini
         if (GetTickCount() - lastIniCheck > 500) {
             lastIniCheck = GetTickCount();
             WIN32_FILE_ATTRIBUTE_DATA fa;
@@ -316,7 +533,7 @@ static void Poll() {
             }
         }
 
-        std::string cmds;  // executed after releasing the lock
+        std::string cmds;
         {
             std::lock_guard<std::mutex> lk(g_mx);
             bool cheat = g_set.category == "cheat";
@@ -333,7 +550,6 @@ static void Poll() {
             wasLoading = s.loading;
 
             // Map change is decided once the load has finished and the name is readable.
-            // Main menu doesn't count as a map change (no split, map timers kept).
             bool menu = !strcmp(s.map, "menu") && !g_run.map.empty();
             if (!s.loading && s.map[0] && !menu && g_run.map != s.map) {
                 std::string done; double t;
@@ -346,16 +562,24 @@ static void Poll() {
                         if (!g_run.splits.empty() && g_run.splits.back().map == done) g_run.splits.back().gold = true;
                     }
                 }
-                // Entering the start map (from another map) resets and starts a new run.
-                if (g_set.autoStart && !g_set.startMap.empty() &&
+                // Auto-start on entering start_map (only if explicitly enabled for IL practice).
+                // Disabled by default so entering Train Station / trainyard will NOT reset the campaign run.
+                if (g_set.autoStartMap && !g_set.startMap.empty() &&
                     _stricmp(g_run.map.c_str(), g_set.startMap.c_str()) == 0) {
                     g_run.Start(); g_run.mapClean = true;
                     g_pbSplits = ReadPbSplits(g_set.category);
-                    Message("Run started");
+                    Message("Run started (map load)");
                 }
                 g_pb = ReadPb(g_set.category, g_run.map);
                 g_maxSpeed = 0;
                 cheatsPending = true;
+
+                // Re-apply FOV and Head Bobbing on map transition
+                char fovCmd[64], bobCmd[64];
+                snprintf(fovCmd, sizeof fovCmd, "set g_fov %d\n", g_set.fov);
+                snprintf(bobCmd, sizeof bobCmd, "set g_noViewBob %d\n", g_set.headBob ? 0 : 1);
+                cmds += fovCmd;
+                cmds += bobCmd;
             }
 
             g_havePlayer = s.player;
@@ -364,14 +588,14 @@ static void Poll() {
                 g_speed = sqrtf(s.vel[0] * s.vel[0] + s.vel[1] * s.vel[1]);
                 if (g_speed > g_maxSpeed) g_maxSpeed = g_speed;
                 g_run.SetHealth(s.hp);
-                // Cheat%: give items once per map, 1 s after control is gained.
                 if (cheat && cheatsPending && s.hp > 0 && GetTickCount() - loadEndTick > 1000) {
-                    cmds = g_set.cheatCmds; cheatsPending = false;
+                    cmds += g_set.cheatCmds + "\n"; cheatsPending = false;
                 }
             }
 
-            if (GameFocused()) {
+            if (GameFocused() && !g_menuOpen) {
                 for (int k = 0; k < K_COUNT; k++) {
+                    if (k == K_MENU) continue; // Handled by hkWndProc
                     bool down = (GetAsyncKeyState(g_set.keys[k]) & 0x8000) != 0;
                     bool pressed = down && !keyDown[k];
                     keyDown[k] = down;
@@ -385,8 +609,9 @@ static void Poll() {
                     case K_RESET: g_run.Reset(); g_maxSpeed = 0; Message("Reset"); break;
                     case K_CATEGORY: {
                         std::string c = g_set.category == "cheat" ? "any" : "cheat";
-                        WritePrivateProfileStringA("general", "category", c.c_str(), g_ini);
-                        g_set.category = c; g_pb = ReadPb(c, g_run.map); g_pbSplits = ReadPbSplits(c);
+                        g_set.category = c;
+                        SaveSettings(g_set);
+                        g_pb = ReadPb(c, g_run.map); g_pbSplits = ReadPbSplits(c);
                         if (c == "cheat") cheatsPending = true;
                         Message(std::string("Category: ") + CategoryName(c));
                         break;
@@ -398,8 +623,20 @@ static void Poll() {
                         if (haveSaved && s.player) {
                             char b[256];
                             snprintf(b, sizeof b, g_set.teleportCmd.c_str(), savedPos[0], savedPos[1], savedPos[2]);
-                            cmds = b; g_run.Teleported(); Message("Teleport (practice)");
+                            cmds += b; cmds += "\n"; g_run.Teleported(); Message("Teleport (practice)");
                         }
+                        break;
+                    case K_QUICKSAVE:
+                        cmds += "contentManagerCommand save full\n";
+                        Message("Quick Save");
+                        break;
+                    case K_QUICKLOAD:
+                        cmds += "contentManagerCommand loadLast\n";
+                        Message("Quick Load");
+                        break;
+                    case K_RESTART_CP:
+                        cmds += "ScaleformDiedRestart\n";
+                        Message("Restart Checkpoint");
                         break;
                     }
                 }
@@ -411,7 +648,7 @@ static void Poll() {
 
 // ---- Rendering -------------------------------------------------------------------------------
 static D3DXCreateFontA_t g_createFont;
-static std::map<int, ID3DXFont*> g_fonts;  // by pixel size
+static std::map<int, ID3DXFont*> g_fonts;
 
 static void ReleaseFonts() { for (auto& f : g_fonts) f.second->Release(); g_fonts.clear(); }
 
@@ -448,7 +685,6 @@ static std::string WidgetText(int id, const Settings& st) {
     return "";
 }
 
-// Semi-transparent filled rectangle (caller wraps drawing in a state block).
 static void FillRect(IDirect3DDevice9* dev, int x0, int y0, int x1, int y1, D3DCOLOR color) {
     if (!(color >> 24)) return;
     struct V { float x, y, z, rhw; D3DCOLOR c; } v[4] = {
@@ -480,7 +716,6 @@ static SIZE Measure(ID3DXFont* f, const std::string& s) {
     return SIZE{r.right, r.bottom};
 }
 
-// Top-left corner of a w x h block placed at (fx, fy) with the given anchor.
 static POINT Place(float fx, float fy, int anchor, int w, int h, int W, int H) {
     POINT p = {int(fx * W), int(fy * H)};
     if (anchor == 1 || anchor == 3) p.x -= w;
@@ -489,7 +724,6 @@ static POINT Place(float fx, float fy, int anchor, int w, int h, int W, int H) {
     return p;
 }
 
-// Label and value in their own colors, optional background box.
 static void DrawLine(IDirect3DDevice9* dev, const std::string& face, int size, bool shadow,
                      const std::string& label, D3DCOLOR labelColor, const std::string& value, D3DCOLOR valueColor,
                      D3DCOLOR bg, float fx, float fy, int anchor, int W, int H) {
@@ -503,7 +737,6 @@ static void DrawLine(IDirect3DDevice9* dev, const std::string& face, int size, b
     Text(f, value, RECT{p.x + a.cx, p.y, p.x + w, p.y + h}, DT_LEFT, valueColor, shadow);
 }
 
-// LiveSplit-style table: map | segment | delta vs PB run | split time. Last row is the current map (live).
 static void DrawSplits(IDirect3DDevice9* dev, const Settings& st, const Widget& w, int W, int H) {
     ID3DXFont* f = Font(dev, w.size, st.font);
     if (!f || g_run.state == Run::Idle) return;
@@ -517,7 +750,7 @@ static void DrawSplits(IDirect3DDevice9* dev, const Settings& st, const Widget& 
         if (live && g_run.state != Run::Running) break;
         std::string map = live ? g_run.map : sp[i].map;
         double time = live ? g_run.igt : sp[i].time;
-        double seg = time - (i ? sp[i - 1].time : 0);  // live row: current segment keeps running
+        double seg = time - (i ? sp[i - 1].time : 0);
         Row r; r.col[0] = map; r.col[1] = T(seg); r.col[3] = T(time); r.deltaColor = w.timeColor;
         if (i < g_pbSplits.size() && g_pbSplits[i].map == map) {
             double d = time - g_pbSplits[i].time;
@@ -545,7 +778,6 @@ static void DrawSplits(IDirect3DDevice9* dev, const Settings& st, const Widget& 
     for (auto& r : rows) {
         int x = p.x;
         for (int c = 0; c < 4; c++) {
-            // Name left-aligned, numbers right-aligned in their column.
             Text(f, r.col[c], RECT{x, y, x + colW[c], y + lineH}, c == 0 ? DT_LEFT : DT_RIGHT,
                  c == 2 ? r.deltaColor : colColor[c], st.shadow);
             x += colW[c] + gap;
@@ -554,10 +786,327 @@ static void DrawSplits(IDirect3DDevice9* dev, const Settings& st, const Widget& 
     }
 }
 
+// In-Game Configuration Menu (ImGui)
+static void DrawInGameMenu(IDirect3DDevice9* dev) {
+    ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowSize(ImVec2(820, 580), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f - 410.0f, io.DisplaySize.y * 0.5f - 290.0f), ImGuiCond_FirstUseEver);
+
+    if (ImGui::Begin("Wolfenstein (2009) Speedrun Mod - Settings", &g_menuOpen, ImGuiWindowFlags_NoCollapse)) {
+        if (ImGui::BeginTabBar("SettingsTabs")) {
+            // TAB 1: Game & Visuals
+            if (ImGui::BeginTabItem("Game & Visuals")) {
+                ImGui::Spacing();
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Field of View (FOV)");
+                if (ImGui::SliderInt("##FOV", &g_set.fov, 60, 120, "%d deg")) {
+                    char cmd[64]; snprintf(cmd, sizeof cmd, "set g_fov %d\n", g_set.fov);
+                    ExecCommand(cmd); SaveSettings(g_set);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("80 (Default)")) {
+                    g_set.fov = 80; char cmd[64]; snprintf(cmd, sizeof cmd, "set g_fov %d\n", g_set.fov);
+                    ExecCommand(cmd); SaveSettings(g_set);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("90")) {
+                    g_set.fov = 90; char cmd[64]; snprintf(cmd, sizeof cmd, "set g_fov %d\n", g_set.fov);
+                    ExecCommand(cmd); SaveSettings(g_set);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("100")) {
+                    g_set.fov = 100; char cmd[64]; snprintf(cmd, sizeof cmd, "set g_fov %d\n", g_set.fov);
+                    ExecCommand(cmd); SaveSettings(g_set);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("110")) {
+                    g_set.fov = 110; char cmd[64]; snprintf(cmd, sizeof cmd, "set g_fov %d\n", g_set.fov);
+                    ExecCommand(cmd); SaveSettings(g_set);
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Head & Weapon Bobbing (Раскачивание камеры / оружия)");
+                if (ImGui::Checkbox("Enable View & Weapon Bobbing", &g_set.headBob)) {
+                    if (g_set.headBob) ExecCommand("set g_noViewBob 0\n");
+                    else ExecCommand("set g_noViewBob 1\n");
+                    SaveSettings(g_set);
+                }
+                ImGui::TextDisabled(g_set.headBob ? "View bobbing is ENABLED (standard game behavior)."
+                                                  : "View bobbing is DISABLED (g_noViewBob 1) - removes screen shaking during sprint/run.");
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Game Language (sys_lang)");
+                int currentLangIdx = 0;
+                for (int i = 0; i < kLangCount; i++) {
+                    if (g_set.language == kLanguages[i]) { currentLangIdx = i; break; }
+                }
+                if (ImGui::Combo("##Language", &currentLangIdx, kLanguages, kLangCount)) {
+                    g_set.language = kLanguages[currentLangIdx];
+                    ExecCommand(std::string("set sys_lang \"") + g_set.language + "\"\n");
+                    SaveSettings(g_set);
+                }
+                ImGui::TextDisabled("Changes game language (subtitles/voice packs). Applied to launch configuration.");
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Quick Actions");
+                if (ImGui::Button("Quick Save (F5)", ImVec2(140, 26))) {
+                    ExecCommand("contentManagerCommand save full\n");
+                    Message("Quick Save");
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Quick Load (F9)", ImVec2(140, 26))) {
+                    ExecCommand("contentManagerCommand loadLast\n");
+                    Message("Quick Load");
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Restart Checkpoint (F11)", ImVec2(190, 26))) {
+                    ExecCommand("ScaleformDiedRestart\n");
+                    Message("Restart Checkpoint");
+                }
+
+                ImGui::EndTabItem();
+            }
+
+            // TAB 2: HUD & Widgets
+            if (ImGui::BeginTabItem("HUD & Widgets")) {
+                ImGui::Spacing();
+                ImGui::Checkbox("Show Overlay", &g_visible);
+                ImGui::SameLine();
+                if (ImGui::Checkbox("Text Shadow", &g_set.shadow)) SaveSettings(g_set);
+                ImGui::SameLine();
+                if (ImGui::Checkbox("Always Show Hours", &g_set.hoursAlways)) SaveSettings(g_set);
+
+                ImGui::Spacing();
+                ImGui::Columns(2, "WidgetColumns", true);
+
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Select Widget");
+                ImGui::BeginChild("WidgetList", ImVec2(0, 340), true);
+                for (int i = 0; i < W_COUNT; i++) {
+                    char label[128];
+                    snprintf(label, sizeof label, "[%s] %s", g_set.w[i].on ? "X" : " ", kWidgetDisplayNames[i]);
+                    if (ImGui::Selectable(label, g_selectedWidget == i)) g_selectedWidget = i;
+                }
+                ImGui::EndChild();
+
+                ImGui::NextColumn();
+
+                Widget& sel = g_set.w[g_selectedWidget];
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "%s", kWidgetDisplayNames[g_selectedWidget]);
+                if (ImGui::Checkbox("Widget Enabled", &sel.on)) SaveSettings(g_set);
+
+                char lblBuf[128]; snprintf(lblBuf, sizeof lblBuf, "%s", sel.label.c_str());
+                if (ImGui::InputText("Label Text", lblBuf, sizeof lblBuf)) {
+                    sel.label = lblBuf; SaveSettings(g_set);
+                }
+
+                if (ImGui::SliderInt("Size (px)", &sel.size, 8, 120)) {
+                    g_fontsDirty = true; SaveSettings(g_set);
+                }
+                if (ImGui::SliderFloat("Position X", &sel.x, 0.0f, 1.0f, "%.4f")) SaveSettings(g_set);
+                if (ImGui::SliderFloat("Position Y", &sel.y, 0.0f, 1.0f, "%.4f")) SaveSettings(g_set);
+
+                const char* anchorNames[] = { "Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right", "Center" };
+                if (ImGui::Combo("Anchor", &sel.anchor, anchorNames, 5)) SaveSettings(g_set);
+
+                ImVec4 cVal = D3DToImVec4(sel.color);
+                if (ImGui::ColorEdit4("Value Color", (float*)&cVal, ImGuiColorEditFlags_AlphaBar)) {
+                    sel.color = ImVec4ToD3D(cVal); SaveSettings(g_set);
+                }
+                ImVec4 cLbl = D3DToImVec4(sel.labelColor);
+                if (ImGui::ColorEdit4("Label Color", (float*)&cLbl, ImGuiColorEditFlags_AlphaBar)) {
+                    sel.labelColor = ImVec4ToD3D(cLbl); SaveSettings(g_set);
+                }
+                ImVec4 cBg = D3DToImVec4(sel.bg);
+                if (ImGui::ColorEdit4("Background Box", (float*)&cBg, ImGuiColorEditFlags_AlphaBar)) {
+                    sel.bg = ImVec4ToD3D(cBg); SaveSettings(g_set);
+                }
+
+                if (g_selectedWidget == W_SPLITS) {
+                    ImGui::Separator();
+                    ImGui::Text("Splits Table Colors:");
+                    ImVec4 cName = D3DToImVec4(sel.nameColor);
+                    if (ImGui::ColorEdit4("Map Name", (float*)&cName, ImGuiColorEditFlags_AlphaBar)) { sel.nameColor = ImVec4ToD3D(cName); SaveSettings(g_set); }
+                    ImVec4 cSeg = D3DToImVec4(sel.segColor);
+                    if (ImGui::ColorEdit4("Segment Time", (float*)&cSeg, ImGuiColorEditFlags_AlphaBar)) { sel.segColor = ImVec4ToD3D(cSeg); SaveSettings(g_set); }
+                    ImVec4 cTime = D3DToImVec4(sel.timeColor);
+                    if (ImGui::ColorEdit4("Split Time", (float*)&cTime, ImGuiColorEditFlags_AlphaBar)) { sel.timeColor = ImVec4ToD3D(cTime); SaveSettings(g_set); }
+                    ImVec4 cAhead = D3DToImVec4(sel.aheadColor);
+                    if (ImGui::ColorEdit4("Ahead (-Delta)", (float*)&cAhead, ImGuiColorEditFlags_AlphaBar)) { sel.aheadColor = ImVec4ToD3D(cAhead); SaveSettings(g_set); }
+                    ImVec4 cBehind = D3DToImVec4(sel.behindColor);
+                    if (ImGui::ColorEdit4("Behind (+Delta)", (float*)&cBehind, ImGuiColorEditFlags_AlphaBar)) { sel.behindColor = ImVec4ToD3D(cBehind); SaveSettings(g_set); }
+                    ImVec4 cGold = D3DToImVec4(sel.goldColor);
+                    if (ImGui::ColorEdit4("Best Segment (Gold)", (float*)&cGold, ImGuiColorEditFlags_AlphaBar)) { sel.goldColor = ImVec4ToD3D(cGold); SaveSettings(g_set); }
+                }
+
+                ImGui::Columns(1);
+                ImGui::EndTabItem();
+            }
+
+            // TAB 3: Keybinds
+            if (ImGui::BeginTabItem("Keybinds")) {
+                ImGui::Spacing();
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Hotkeys & Binds");
+                ImGui::TextDisabled("Click 'Rebind' and press any key on your keyboard or mouse keypad.");
+
+                ImGui::Spacing();
+                ImGui::BeginChild("KeyTable", ImVec2(0, 360), true);
+                for (int i = 0; i < K_COUNT; i++) {
+                    ImGui::PushID(i);
+                    ImGui::Text("%-28s :", kKeyTitles[i]);
+                    ImGui::SameLine(240);
+                    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "[ %s ]", GetKeyDisplayName(g_set.keys[i]));
+                    ImGui::SameLine(360);
+                    if (g_rebindKeyIndex == i) {
+                        ImGui::Button("Press any key... (Esc to cancel)", ImVec2(240, 24));
+                    } else {
+                        if (ImGui::Button("Rebind", ImVec2(100, 24))) g_rebindKeyIndex = i;
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::EndChild();
+
+                if (ImGui::Button("Reset All Keybinds to Defaults")) {
+                    for (int i = 0; i < K_COUNT; i++) g_set.keys[i] = kKeyDefaults[i];
+                    SaveSettings(g_set);
+                }
+                ImGui::EndTabItem();
+            }
+
+            // TAB 4: Categories & Rules
+            if (ImGui::BeginTabItem("Categories & Rules")) {
+                ImGui::Spacing();
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Speedrun Category");
+                if (ImGui::RadioButton("Any% (Standard rules)", g_set.category == "any")) {
+                    g_set.category = "any"; SaveSettings(g_set);
+                    g_pb = ReadPb(g_set.category, g_run.map); g_pbSplits = ReadPbSplits(g_set.category);
+                }
+                ImGui::SameLine();
+                if (ImGui::RadioButton("Cheat% (Practice / Cheats allowed)", g_set.category == "cheat")) {
+                    g_set.category = "cheat"; SaveSettings(g_set);
+                    g_pb = ReadPb(g_set.category, g_run.map); g_pbSplits = ReadPbSplits(g_set.category);
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Timer Reset Triggers");
+                if (ImGui::Checkbox("Auto-start & reset on campaign cutscene (wolf_campaign_start_vo_english.bik)", &g_set.autoStartCutscene))
+                    SaveSettings(g_set);
+                ImGui::TextDisabled("Recommended: resets the run when the campaign intro video begins. IGT pauses during the cutscene.");
+
+                if (ImGui::Checkbox("Auto-start & reset on map load (Individual Level IL runs only)", &g_set.autoStartMap))
+                    SaveSettings(g_set);
+                if (g_set.autoStartMap) {
+                    int selMission = 0;
+                    for (int i = 0; i < kMissionCount; i++) {
+                        if (g_set.startMap == kMissionIds[i]) { selMission = i; break; }
+                    }
+                    if (ImGui::Combo("Start Mission", &selMission, kMissionNames, kMissionCount)) {
+                        g_set.startMap = kMissionIds[selMission]; SaveSettings(g_set);
+                    }
+                } else {
+                    ImGui::TextDisabled("Entering Train Station (trainyard) will NOT reset your run.");
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Cheat% Configuration");
+                if (ImGui::Checkbox("Lock God Mode", &g_set.cheatGod)) SaveSettings(g_set);
+
+                char cmdBuf[512]; snprintf(cmdBuf, sizeof cmdBuf, "%s", g_set.cheatCmds.c_str());
+                if (ImGui::InputText("Commands on Map Load", cmdBuf, sizeof cmdBuf)) {
+                    g_set.cheatCmds = cmdBuf; SaveSettings(g_set);
+                }
+                char tpBuf[512]; snprintf(tpBuf, sizeof tpBuf, "%s", g_set.teleportCmd.c_str());
+                if (ImGui::InputText("Teleport Command Template", tpBuf, sizeof tpBuf)) {
+                    g_set.teleportCmd = tpBuf; SaveSettings(g_set);
+                }
+
+                ImGui::EndTabItem();
+            }
+
+            // TAB 5: Records & Splits
+            if (ImGui::BeginTabItem("Records & Splits")) {
+                ImGui::Spacing();
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Best Run Splits (%s)", CategoryName(g_set.category));
+                if (g_pbSplits.empty()) {
+                    ImGui::TextDisabled("No completed run saved in srmod_pb.ini yet.");
+                } else {
+                    ImGui::BeginChild("SplitsList", ImVec2(0, 220), true);
+                    ImGui::Columns(3, "PbCols");
+                    ImGui::Text("Map"); ImGui::NextColumn();
+                    ImGui::Text("Segment"); ImGui::NextColumn();
+                    ImGui::Text("Total Split Time"); ImGui::NextColumn();
+                    ImGui::Separator();
+                    for (const auto& sp : g_pbSplits) {
+                        ImGui::Text("%s", sp.map.c_str()); ImGui::NextColumn();
+                        ImGui::Text("%s", FormatTime(sp.seg, 2, false).c_str()); ImGui::NextColumn();
+                        ImGui::Text("%s", FormatTime(sp.time, 2, false).c_str()); ImGui::NextColumn();
+                    }
+                    ImGui::Columns(1);
+                    ImGui::EndChild();
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+
+                if (!g_confirmResetPb) {
+                    if (ImGui::Button("Reset All PB Data for this Category")) g_confirmResetPb = true;
+                } else {
+                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Are you sure you want to erase all PBs in this category?");
+                    ImGui::SameLine();
+                    if (ImGui::Button("YES, ERASE")) {
+                        WritePrivateProfileStringA(g_set.category.c_str(), nullptr, nullptr, g_pbIni);
+                        std::string sec = "splits." + g_set.category;
+                        WritePrivateProfileStringA(sec.c_str(), nullptr, nullptr, g_pbIni);
+                        g_pb = -1; g_pbSplits.clear();
+                        g_confirmResetPb = false;
+                        Message("PB data erased");
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cancel")) g_confirmResetPb = false;
+                }
+                ImGui::EndTabItem();
+            }
+
+            ImGui::EndTabBar();
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        if (ImGui::Button("Save Settings", ImVec2(140, 28))) {
+            SaveSettings(g_set); Message("Settings saved");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Close Menu (Esc / F1)", ImVec2(160, 28))) {
+            g_menuOpen = false;
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("Map: %s | State: %s | FOV: %d | Bob: %s",
+            g_run.map.empty() ? "None" : g_run.map.c_str(),
+            g_run.state == Run::Running ? "RUNNING" : g_run.state == Run::Finished ? "FINISHED" : "IDLE",
+            g_set.fov, g_set.headBob ? "ON" : "OFF");
+    }
+    ImGui::End();
+}
+
 static void DrawOverlay(IDirect3DDevice9* dev) {
     std::lock_guard<std::mutex> lk(g_mx);
     if (g_fontsDirty) { ReleaseFonts(); g_fontsDirty = false; }
-    if (!g_visible) return;
 
     IDirect3DSurface9 *bb = nullptr, *oldRt = nullptr;
     if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb))) return;
@@ -566,23 +1115,71 @@ static void DrawOverlay(IDirect3DDevice9* dev) {
     dev->GetRenderTarget(0, &oldRt);
     dev->SetRenderTarget(0, bb);
 
+    // Initialize ImGui on first valid frame
+    if (!g_imguiInit) {
+        D3DDEVICE_CREATION_PARAMETERS cp = {};
+        if (SUCCEEDED(dev->GetCreationParameters(&cp))) {
+            g_gameHwnd = cp.hFocusWindow ? cp.hFocusWindow : GetForegroundWindow();
+            if (g_gameHwnd) {
+                IMGUI_CHECKVERSION();
+                ImGui::CreateContext();
+                ImGuiIO& io = ImGui::GetIO();
+                io.IniFilename = nullptr; // Don't use imgui.ini; settings saved in srmod.ini
+                ImGui::StyleColorsDark();
+                ImGuiStyle& style = ImGui::GetStyle();
+                style.WindowRounding = 6.0f;
+                style.FrameRounding = 4.0f;
+                style.PopupRounding = 4.0f;
+                style.Colors[ImGuiCol_WindowBg] = ImVec4(0.08f, 0.08f, 0.10f, 0.94f);
+                style.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.20f, 0.22f, 0.30f, 1.0f);
+
+                ImGui_ImplWin32_Init(g_gameHwnd);
+                ImGui_ImplDX9_Init(dev);
+
+                g_origWndProc = (WNDPROC)SetWindowLongPtrA(g_gameHwnd, GWLP_WNDPROC, (LONG_PTR)hkWndProc);
+                g_imguiInit = true;
+                Log("ImGui initialized on HWND %p", g_gameHwnd);
+            }
+        }
+    }
+
     IDirect3DStateBlock9* sb = nullptr;
-    dev->CreateStateBlock(D3DSBT_ALL, &sb);  // FillRect changes render states; restore the game's
+    dev->CreateStateBlock(D3DSBT_ALL, &sb);
+
     if (SUCCEEDED(dev->BeginScene())) {
         int W = desc.Width, H = desc.Height;
         const Settings& st = g_set;
-        if (!g_supported)
-            DrawLine(dev, st.font, 22, true, "", 0, "srmod: unsupported game version (see srmod.log)", 0xFFFF5050,
-                     0, 0.5f, 0.05f, 4, W, H);
-        for (int i = 0; i < W_COUNT; i++) {
-            const Widget& w = st.w[i];
-            if (!w.on) continue;
-            if (i == W_SPLITS) DrawSplits(dev, st, w, W, H);
-            else DrawLine(dev, st.font, w.size, st.shadow, w.label, w.labelColor, WidgetText(i, st), w.color,
-                          w.bg, w.x, w.y, w.anchor, W, H);
+
+        // Draw Speedrun Overlay widgets (if visible)
+        if (g_visible) {
+            if (!g_supported)
+                DrawLine(dev, st.font, 22, true, "", 0, "srmod: unsupported game version (see srmod.log)", 0xFFFF5050,
+                         0, 0.5f, 0.05f, 4, W, H);
+            for (int i = 0; i < W_COUNT; i++) {
+                const Widget& w = st.w[i];
+                if (!w.on) continue;
+                if (i == W_SPLITS) DrawSplits(dev, st, w, W, H);
+                else DrawLine(dev, st.font, w.size, st.shadow, w.label, w.labelColor, WidgetText(i, st), w.color,
+                              w.bg, w.x, w.y, w.anchor, W, H);
+            }
+            if (GetTickCount() < g_msgUntil)
+                DrawLine(dev, st.font, 30, true, "", 0, g_msg, 0xFFFFD040, 0x90000000, 0.5f, 0.2f, 4, W, H);
+            if (!g_menuOpen)
+                DrawLine(dev, st.font, 14, false, "", 0, "[F1] Speedrun Settings", 0x80FFFFFF, 0x40000000, 0.005f, 0.995f, 2, W, H);
         }
-        if (GetTickCount() < g_msgUntil)
-            DrawLine(dev, st.font, 30, true, "", 0, g_msg, 0xFFFFD040, 0x90000000, 0.5f, 0.2f, 4, W, H);
+
+        // Draw In-Game Menu
+        if (g_imguiInit) {
+            ImGui_ImplDX9_NewFrame();
+            ImGui_ImplWin32_NewFrame();
+            ImGui::NewFrame();
+            ImGui::GetIO().MouseDrawCursor = g_menuOpen;
+            if (g_menuOpen) DrawInGameMenu(dev);
+            ImGui::EndFrame();
+            ImGui::Render();
+            ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+        }
+
         dev->EndScene();
     }
     if (sb) { sb->Apply(); sb->Release(); }
@@ -608,15 +1205,17 @@ static HRESULT __stdcall hkReset(IDirect3DDevice9* dev, D3DPRESENT_PARAMETERS* p
     {
         std::lock_guard<std::mutex> lk(g_mx);
         for (auto& f : g_fonts) f.second->OnLostDevice();
+        if (g_imguiInit) ImGui_ImplDX9_InvalidateDeviceObjects();
     }
     HRESULT hr = oReset(dev, pp);
     std::lock_guard<std::mutex> lk(g_mx);
-    if (SUCCEEDED(hr)) for (auto& f : g_fonts) f.second->OnResetDevice();
-    else g_fontsDirty = true;
+    if (SUCCEEDED(hr)) {
+        for (auto& f : g_fonts) f.second->OnResetDevice();
+        if (g_imguiInit) ImGui_ImplDX9_CreateDeviceObjects();
+    } else g_fontsDirty = true;
     return hr;
 }
 
-// Hot-patch (mov edi,edi + 5 byte pad) when possible, else patch the shared vtable slot.
 static bool Hook(void** vtable, int idx, void* hook, void** orig) {
     BYTE* fn = (BYTE*)vtable[idx];
     DWORD old;
@@ -626,7 +1225,7 @@ static bool Hook(void** vtable, int idx, void* hook, void** orig) {
         VirtualProtect(fn - 5, 7, PAGE_EXECUTE_READWRITE, &old);
         *orig = fn + 2;
         fn[-5] = 0xE9; *(int*)(fn - 4) = int((BYTE*)hook - fn);
-        *(WORD*)fn = 0xF9EB;  // jmp short -5
+        *(WORD*)fn = 0xF9EB;
         VirtualProtect(fn - 5, 7, old, &old);
         FlushInstructionCache(GetCurrentProcess(), fn - 5, 7);
         Log("hook %d: hotpatch", idx);
@@ -677,7 +1276,6 @@ static DWORD WINAPI MainThread(LPVOID) {
     g_session = FindSession();
     Log("session: %p", g_session);
 
-    // Wait for the renderer and the game DLL, then hook and start polling.
     bool hooked = false;
     while (!hooked || !GetModuleHandleA("Gamex86.dll")) {
         if (!hooked && GetModuleHandleA("d3d9.dll")) hooked = InstallD3DHooks();
@@ -691,8 +1289,6 @@ static DWORD WINAPI MainThread(LPVOID) {
 }
 
 // ---- Bink exports we wrap (the rest are forwarded to binkw32_orig.dll by binkw32.def) --------
-// An open Bink handle means a pre-rendered cutscene is playing; IGT pauses meanwhile.
-// ponytail: counts every Bink video, including menu backgrounds; fine because runs don't sit in menus.
 static FARPROC BinkOrig(const char* name) {
     static HMODULE orig = LoadLibraryA("binkw32_orig.dll");
     return orig ? GetProcAddress(orig, name) : nullptr;
@@ -702,6 +1298,22 @@ extern "C" void* __stdcall SrBinkOpen(const char* file, unsigned flags) {
     static auto fn = (void*(__stdcall*)(const char*, unsigned))BinkOrig("_BinkOpen@8");
     void* h = fn ? fn(file, flags) : nullptr;
     if (h) InterlockedIncrement(&g_binkOpen);
+
+    // Reset and start timer when campaign intro cutscene starts
+    if (file) {
+        std::string fnLower = file;
+        for (char& c : fnLower) c = (char)tolower((unsigned char)c);
+        if (fnLower.find("wolf_campaign_start") != std::string::npos) {
+            std::lock_guard<std::mutex> lk(g_mx);
+            if (g_set.autoStartCutscene) {
+                g_run.Start();
+                g_run.mapClean = true;
+                g_pbSplits = ReadPbSplits(g_set.category);
+                Message("Run started (campaign)");
+                Log("Campaign start cutscene opened: %s -> timer reset and started", file);
+            }
+        }
+    }
     return h;
 }
 
