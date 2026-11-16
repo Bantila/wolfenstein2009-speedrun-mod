@@ -73,7 +73,7 @@ class LauncherForm : Form {
     TextBox labelBox = new TextBox();
     NumericUpDown sizeBox = new NumericUpDown();
     ComboBox anchorBox = new ComboBox();
-    Button colorBtn = new Button();
+    FlowLayoutPanel colorsPanel = new FlowLayoutPanel();
     Label status = new Label();
     bool loading, allowCheck;
     int dragIdx = -1; Point dragLast;
@@ -162,14 +162,11 @@ class LauncherForm : Form {
         labelBox.TextChanged += delegate { if (!loading && Sel != null) { Sel.Label = labelBox.Text; SaveWidget(Sel); } };
         sizeBox.ValueChanged += delegate { if (!loading && Sel != null) { Sel.Size = (int)sizeBox.Value; SaveWidget(Sel); } };
         anchorBox.SelectedIndexChanged += delegate { if (!loading && Sel != null) { Sel.Anchor = anchorBox.SelectedIndex; SaveWidget(Sel); } };
-        colorBtn.Text = L("Color…", "Цвет…");
-        colorBtn.Click += delegate {
-            if (Sel == null) return;
-            var d = new ColorDialog { Color = Sel.Color, FullOpen = true };
-            if (d.ShowDialog() == DialogResult.OK) { Sel.Color = Color.FromArgb(255, d.Color); SaveWidget(Sel); LoadProps(); }
-        };
+        colorsPanel.FlowDirection = FlowDirection.TopDown; colorsPanel.AutoSize = true; colorsPanel.WrapContents = false;
         AddRow(props, L("Label", "Подпись"), labelBox); AddRow(props, L("Size (px)", "Размер (px)"), sizeBox);
-        AddRow(props, L("Anchor", "Привязка"), anchorBox); AddRow(props, "", colorBtn);
+        AddRow(props, L("Anchor", "Привязка"), anchorBox);
+        props.Controls.Add(colorsPanel, 0, props.RowCount++); props.SetColumnSpan(colorsPanel, 2);
+        props.AutoScroll = true;
         AddRow(props, L("Your resolution", "Твоё разрешение"), ResolutionBox());
         var hint = new Label { AutoSize = true, ForeColor = Color.Gray, Text = L(
             "Drag widgets in the preview.\nPositions are stored as screen fractions,\nso they fit any resolution.\nResolution: pick or type, e.g. 2560x1600.",
@@ -198,10 +195,66 @@ class LauncherForm : Form {
         var w = Sel; if (w == null) return;
         loading = true;
         labelBox.Text = w.Label; sizeBox.Value = Math.Max(8, Math.Min(120, w.Size));
-        anchorBox.SelectedIndex = Math.Max(0, Math.Min(4, w.Anchor)); colorBtn.BackColor = w.Color;
-        colorBtn.ForeColor = w.Color.GetBrightness() > 0.5 ? Color.Black : Color.White;
+        anchorBox.SelectedIndex = Math.Max(0, Math.Min(4, w.Anchor));
+        BuildColors(w);
         loading = false;
         preview.Invalidate();
+    }
+
+    // ---- Per-element colors: every text part and the background is its own ini key ----
+    string[][] ColorKeys(Widget w) {
+        if (w.Id == "splits") return new[] {
+            new[] { "name_color", L("Map name", "Название карты") }, new[] { "seg_color", L("Segment time", "Время сегмента") },
+            new[] { "time_color", L("Split time", "Время сплита") }, new[] { "ahead_color", L("Delta: ahead", "Дельта: быстрее") },
+            new[] { "behind_color", L("Delta: behind", "Дельта: медленнее") }, new[] { "gold_color", L("Best segment", "Лучший сегмент") },
+            new[] { "bg", L("Background", "Фон") } };
+        return new[] { new[] { "color", L("Value", "Значение") }, new[] { "label_color", L("Label", "Подпись") },
+                       new[] { "bg", L("Background", "Фон") } };
+    }
+
+    // Same defaults as mod.cpp LoadSettings().
+    Color WColor(Widget w, string key) {
+        if (key == "color") return w.Color;
+        string def = key == "bg" ? "00000000" : key == "ahead_color" ? "FF40E040" : key == "behind_color" ? "FFE04848" :
+                     key == "gold_color" ? "FFFFD700" : w.Color.ToArgb().ToString("X8");
+        uint v; return uint.TryParse(Ini.Get(w.Sec, key, def), NumberStyles.HexNumber, null, out v) ? Color.FromArgb((int)v) : Color.White;
+    }
+
+    void SetWColor(Widget w, string key, Color c) {
+        if (key == "color") { w.Color = c; SaveWidget(w); return; }
+        Ini.Set(w.Sec, key, c.ToArgb().ToString("X8")); preview.Invalidate();
+    }
+
+    void BuildColors(Widget w) {
+        colorsPanel.Controls.Clear();
+        foreach (var kv in ColorKeys(w)) {
+            string key = kv[0];
+            var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0) };
+            var b = new Button { Text = kv[1], Width = 150, Height = 26, FlatStyle = FlatStyle.Flat };
+            Action paint = () => {
+                var c = WColor(w, key);
+                b.BackColor = c.A == 0 ? SystemColors.Control : Color.FromArgb(255, c);
+                b.ForeColor = c.A == 0 || c.GetBrightness() > 0.5 ? Color.Black : Color.White;
+            };
+            paint();
+            row.Controls.Add(b);
+            if (key == "bg") {
+                // Background has an opacity; 0% = no background.
+                var op = new NumericUpDown { Minimum = 0, Maximum = 100, Width = 55, Value = WColor(w, key).A * 100 / 255 };
+                op.ValueChanged += delegate { var c = WColor(w, key); SetWColor(w, key, Color.FromArgb((int)op.Value * 255 / 100, c)); paint(); };
+                b.Click += delegate {
+                    var d = new ColorDialog { Color = Color.FromArgb(255, WColor(w, key)), FullOpen = true };
+                    if (d.ShowDialog() != DialogResult.OK) return;
+                    if (op.Value == 0) op.Value = 60;
+                    SetWColor(w, key, Color.FromArgb((int)op.Value * 255 / 100, d.Color)); paint();
+                };
+                row.Controls.Add(op); row.Controls.Add(new Label { Text = "%", AutoSize = true, Margin = new Padding(0, 6, 0, 0) });
+            } else b.Click += delegate {
+                var d = new ColorDialog { Color = WColor(w, key), FullOpen = true };
+                if (d.ShowDialog() == DialogResult.OK) { SetWColor(w, key, Color.FromArgb(255, d.Color)); paint(); }
+            };
+            colorsPanel.Controls.Add(row);
+        }
     }
 
     void SaveWidget(Widget w) {
@@ -266,9 +319,16 @@ class LauncherForm : Form {
         for (int i = 0; i < widgets.Length; i++) {
             var w = widgets[i]; if (!w.On) continue;
             Font f; var r = WidgetRect(g, w, scr, out f);
+            using (var bg = new SolidBrush(WColor(w, "bg"))) g.FillRectangle(bg, Rectangle.Inflate(r, (int)(f.Size / 4), (int)(f.Size / 8)));
             if (i == list.SelectedIndex) g.DrawRectangle(Pens.Yellow, r);
-            g.DrawString(w.Label + w.Sample, f, Brushes.Black, r.X + 2, r.Y + 2);
-            using (var br = new SolidBrush(w.Color)) g.DrawString(w.Label + w.Sample, f, br, r.X, r.Y);
+            // Label and value drawn separately so each uses its own color (splits: map name color).
+            string label = w.Id == "splits" ? "" : w.Label;
+            var sf = new StringFormat(StringFormat.GenericTypographic); sf.FormatFlags |= StringFormatFlags.MeasureTrailingSpaces;
+            float lw = label.Length > 0 ? g.MeasureString(label, f, PointF.Empty, sf).Width : 0;
+            g.DrawString(label + w.Sample, f, Brushes.Black, r.X + 2, r.Y + 2, sf);
+            using (var lb = new SolidBrush(WColor(w, "label_color"))) g.DrawString(label, f, lb, r.X, r.Y, sf);
+            using (var vb = new SolidBrush(WColor(w, w.Id == "splits" ? "name_color" : "color")))
+                g.DrawString(w.Sample, f, vb, r.X + lw, r.Y, sf);
             f.Dispose();
         }
     }

@@ -47,8 +47,10 @@ int main() {
     a.paused = true; a.Tick(4); a.paused = false;          // screen shown: IGT stopped
     assert(a.MapLoaded("farm", &m, &t) && m == "trainyard");
     assert(a.splits.size() == 1 && !a.splitDone);
-    assert(!a.MapLoaded("menu", &m, &t) || m != "menu");   // quitting to menu isn't a split...
-    assert(!a.MapLoaded("farm", &m, &t));                  // ...and menu is never PB-eligible
+    a.Tick(2);
+    assert(!a.MapLoaded("menu", &m, &t) && a.map == "farm"); // quitting to menu: no split, map kept
+    assert(!a.MapLoaded("farm", &m, &t) && a.mapIgt == 2);   // continuing = reload, timer kept
+    assert(a.splits.size() == 1);
 
     r.Finish(); r.Tick(5);
     assert(r.rta == 9 && r.state == Run::Finished);

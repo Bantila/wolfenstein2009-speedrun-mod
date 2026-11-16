@@ -68,9 +68,13 @@ const char* kWidgetNames[W_COUNT] = {"coords", "speed", "total_rta", "total_igt"
                                      "pb", "loads", "deaths", "category", "map", "splits"};
 const char* kWidgetLabels[W_COUNT] = {"", "Speed ", "RTA ", "IGT ", "Map RTA ", "Map IGT ",
                                       "PB ", "Loads ", "Deaths ", "", "", ""};
-const D3DCOLOR COLOR_AHEAD = 0xFF40E040, COLOR_BEHIND = 0xFFE04848, COLOR_GOLD = 0xFFFFD700;
 
-struct Widget { bool on; float x, y; int anchor, size; D3DCOLOR color; std::string label; };
+
+struct Widget {
+    bool on; float x, y; int anchor, size; std::string label;
+    D3DCOLOR color, labelColor, bg;                    // value text, label text, background (0 = none)
+    D3DCOLOR nameColor, segColor, timeColor, aheadColor, behindColor, goldColor;  // splits only
+};
 enum Key { K_TOGGLE, K_STARTSTOP, K_RESET, K_CATEGORY, K_SAVEPOS, K_TELEPORT, K_COUNT };
 const char* kKeyNames[K_COUNT] = {"toggle", "start_stop", "reset", "category", "save_pos", "teleport"};
 const int kKeyDefaults[K_COUNT] = {VK_F6, VK_F7, VK_F8, VK_F10, VK_NUMPAD7, VK_NUMPAD9};
@@ -120,7 +124,14 @@ static Settings LoadSettings() {
         w.y = IniF(sec.c_str(), "y", splits ? 0.02f : 0.02f + 0.03f * i);
         w.anchor = IniI(sec.c_str(), "anchor", splits ? 1 : 0);
         w.size = IniI(sec.c_str(), "size", 22);
-        w.color = strtoul(IniS(sec.c_str(), "color", "FFFFFFFF").c_str(), nullptr, 16);
+        auto C = [&](const char* key, const char* def) { return (D3DCOLOR)strtoul(IniS(sec.c_str(), key, def).c_str(), nullptr, 16); };
+        w.color = C("color", "FFFFFFFF");
+        char hex[16]; snprintf(hex, sizeof hex, "%08X", w.color);
+        w.labelColor = C("label_color", hex);  // defaults to the value color
+        w.bg = C("bg", "00000000");
+        w.nameColor = C("name_color", hex); w.segColor = C("seg_color", hex); w.timeColor = C("time_color", hex);
+        w.aheadColor = C("ahead_color", "FF40E040"); w.behindColor = C("behind_color", "FFE04848");
+        w.goldColor = C("gold_color", "FFFFD700");
         w.label = IniS(sec.c_str(), "label", kWidgetLabels[i]);
     }
     for (int i = 0; i < K_COUNT; i++) s.keys[i] = IniI("keys", kKeyNames[i], kKeyDefaults[i]);
@@ -322,7 +333,9 @@ static void Poll() {
             wasLoading = s.loading;
 
             // Map change is decided once the load has finished and the name is readable.
-            if (!s.loading && s.map[0] && g_run.map != s.map) {
+            // Main menu doesn't count as a map change (no split, map timers kept).
+            bool menu = !strcmp(s.map, "menu") && !g_run.map.empty();
+            if (!s.loading && s.map[0] && !menu && g_run.map != s.map) {
                 std::string done; double t;
                 if (g_run.MapLoaded(s.map, &done, &t)) {
                     double pb = ReadPb(g_set.category, done);
@@ -435,23 +448,59 @@ static std::string WidgetText(int id, const Settings& st) {
     return "";
 }
 
-static void DrawLine(IDirect3DDevice9* dev, const std::string& face, int size, D3DCOLOR color, bool shadow,
-                     const std::string& text, float fx, float fy, int anchor, int W, int H) {
-    ID3DXFont* f = Font(dev, size, face);
-    if (!f || text.empty()) return;
-    RECT r = {0, 0, 0, 0};
-    f->DrawTextA(nullptr, text.c_str(), -1, &r, DT_CALCRECT | DT_NOCLIP, 0);
-    int w = r.right - r.left, h = r.bottom - r.top;
-    int x = int(fx * W), y = int(fy * H);
-    if (anchor == 1 || anchor == 3) x -= w;   // right-anchored
-    if (anchor == 2 || anchor == 3) y -= h;   // bottom-anchored
-    if (anchor == 4) { x -= w / 2; y -= h / 2; }  // centered
+// Semi-transparent filled rectangle (caller wraps drawing in a state block).
+static void FillRect(IDirect3DDevice9* dev, int x0, int y0, int x1, int y1, D3DCOLOR color) {
+    if (!(color >> 24)) return;
+    struct V { float x, y, z, rhw; D3DCOLOR c; } v[4] = {
+        {(float)x0, (float)y0, 0, 1, color}, {(float)x1, (float)y0, 0, 1, color},
+        {(float)x0, (float)y1, 0, 1, color}, {(float)x1, (float)y1, 0, 1, color}};
+    dev->SetPixelShader(nullptr); dev->SetVertexShader(nullptr); dev->SetTexture(0, nullptr);
+    dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+    dev->SetRenderState(D3DRS_ZENABLE, FALSE); dev->SetRenderState(D3DRS_LIGHTING, FALSE);
+    dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE); dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE); dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+    dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA); dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1); dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+    dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1); dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+    dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(V));
+}
+
+static void Text(ID3DXFont* f, const std::string& s, RECT r, DWORD fmt, D3DCOLOR color, bool shadow) {
+    if (s.empty()) return;
     if (shadow) {
-        RECT s = {x + 2, y + 2, x + w + 2, y + h + 2};
-        f->DrawTextA(nullptr, text.c_str(), -1, &s, DT_NOCLIP, D3DCOLOR_ARGB((color >> 24) & 0xFF, 0, 0, 0));
+        RECT sh = {r.left + 2, r.top + 2, r.right + 2, r.bottom + 2};
+        f->DrawTextA(nullptr, s.c_str(), -1, &sh, fmt | DT_NOCLIP, D3DCOLOR_ARGB((color >> 24) & 0xFF, 0, 0, 0));
     }
-    RECT d = {x, y, x + w, y + h};
-    f->DrawTextA(nullptr, text.c_str(), -1, &d, DT_NOCLIP, color);
+    f->DrawTextA(nullptr, s.c_str(), -1, &r, fmt | DT_NOCLIP, color);
+}
+
+static SIZE Measure(ID3DXFont* f, const std::string& s) {
+    RECT r = {0, 0, 0, 0};
+    if (!s.empty()) f->DrawTextA(nullptr, s.c_str(), -1, &r, DT_CALCRECT | DT_NOCLIP, 0);
+    return SIZE{r.right, r.bottom};
+}
+
+// Top-left corner of a w x h block placed at (fx, fy) with the given anchor.
+static POINT Place(float fx, float fy, int anchor, int w, int h, int W, int H) {
+    POINT p = {int(fx * W), int(fy * H)};
+    if (anchor == 1 || anchor == 3) p.x -= w;
+    if (anchor == 2 || anchor == 3) p.y -= h;
+    if (anchor == 4) { p.x -= w / 2; p.y -= h / 2; }
+    return p;
+}
+
+// Label and value in their own colors, optional background box.
+static void DrawLine(IDirect3DDevice9* dev, const std::string& face, int size, bool shadow,
+                     const std::string& label, D3DCOLOR labelColor, const std::string& value, D3DCOLOR valueColor,
+                     D3DCOLOR bg, float fx, float fy, int anchor, int W, int H) {
+    ID3DXFont* f = Font(dev, size, face);
+    if (!f || (label.empty() && value.empty())) return;
+    SIZE a = Measure(f, label), b = Measure(f, value);
+    int w = a.cx + b.cx, h = a.cy > b.cy ? a.cy : b.cy, pad = size / 4;
+    POINT p = Place(fx, fy, anchor, w, h, W, H);
+    FillRect(dev, p.x - pad, p.y - pad / 2, p.x + w + pad, p.y + h + pad / 2, bg);
+    Text(f, label, RECT{p.x, p.y, p.x + a.cx, p.y + h}, DT_LEFT, labelColor, shadow);
+    Text(f, value, RECT{p.x + a.cx, p.y, p.x + w, p.y + h}, DT_LEFT, valueColor, shadow);
 }
 
 // LiveSplit-style table: map | segment | delta vs PB run | split time. Last row is the current map (live).
@@ -468,45 +517,37 @@ static void DrawSplits(IDirect3DDevice9* dev, const Settings& st, const Widget& 
         if (live && g_run.state != Run::Running) break;
         std::string map = live ? g_run.map : sp[i].map;
         double time = live ? g_run.igt : sp[i].time;
-        double seg = time - (i ? sp[i - 1].time : 0);
-        Row r; r.col[0] = map; r.col[1] = T(seg); r.col[3] = T(time); r.deltaColor = w.color;
+        double seg = time - (i ? sp[i - 1].time : 0);  // live row: current segment keeps running
+        Row r; r.col[0] = map; r.col[1] = T(seg); r.col[3] = T(time); r.deltaColor = w.timeColor;
         if (i < g_pbSplits.size() && g_pbSplits[i].map == map) {
             double d = time - g_pbSplits[i].time;
             r.col[2] = FormatDelta(d, st.decimals);
-            r.deltaColor = d < 0 ? COLOR_AHEAD : COLOR_BEHIND;
+            r.deltaColor = d < 0 ? w.aheadColor : w.behindColor;
         }
-        if (!live && sp[i].gold) r.deltaColor = COLOR_GOLD;
-        if (live) r.col[1] = "";
+        if (!live && sp[i].gold) r.deltaColor = w.goldColor;
         rows.push_back(r);
     }
     if (rows.empty()) return;
 
-    int colW[4] = {}, lineH = 0, gap = w.size;
+    int colW[4] = {}, lineH = 0, gap = w.size, pad = w.size / 4;
     for (auto& r : rows)
         for (int c = 0; c < 4; c++) {
-            RECT m = {0, 0, 0, 0};
-            f->DrawTextA(nullptr, r.col[c].empty() ? " " : r.col[c].c_str(), -1, &m, DT_CALCRECT | DT_NOCLIP, 0);
-            if (m.right > colW[c]) colW[c] = m.right;
-            if (m.bottom > lineH) lineH = m.bottom;
+            SIZE m = Measure(f, r.col[c].empty() ? " " : r.col[c]);
+            if (m.cx > colW[c]) colW[c] = m.cx;
+            if (m.cy > lineH) lineH = m.cy;
         }
     int totalW = colW[0] + colW[1] + colW[2] + colW[3] + 3 * gap, totalH = lineH * (int)rows.size();
-    int x0 = int(w.x * W), y = int(w.y * H);
-    if (w.anchor == 1 || w.anchor == 3) x0 -= totalW;
-    if (w.anchor == 2 || w.anchor == 3) y -= totalH;
-    if (w.anchor == 4) { x0 -= totalW / 2; y -= totalH / 2; }
+    POINT p = Place(w.x, w.y, w.anchor, totalW, totalH, W, H);
+    FillRect(dev, p.x - pad, p.y - pad / 2, p.x + totalW + pad, p.y + totalH + pad / 2, w.bg);
 
+    const D3DCOLOR colColor[4] = {w.nameColor, w.segColor, 0, w.timeColor};
+    int y = p.y;
     for (auto& r : rows) {
-        int x = x0;
+        int x = p.x;
         for (int c = 0; c < 4; c++) {
             // Name left-aligned, numbers right-aligned in their column.
-            RECT d = {x, y, x + colW[c], y + lineH};
-            DWORD fmt = DT_NOCLIP | (c == 0 ? DT_LEFT : DT_RIGHT);
-            D3DCOLOR col = c == 2 ? r.deltaColor : w.color;
-            if (st.shadow) {
-                RECT s = {d.left + 2, d.top + 2, d.right + 2, d.bottom + 2};
-                f->DrawTextA(nullptr, r.col[c].c_str(), -1, &s, fmt, D3DCOLOR_ARGB((col >> 24) & 0xFF, 0, 0, 0));
-            }
-            f->DrawTextA(nullptr, r.col[c].c_str(), -1, &d, fmt, col);
+            Text(f, r.col[c], RECT{x, y, x + colW[c], y + lineH}, c == 0 ? DT_LEFT : DT_RIGHT,
+                 c == 2 ? r.deltaColor : colColor[c], st.shadow);
             x += colW[c] + gap;
         }
         y += lineH;
@@ -525,22 +566,26 @@ static void DrawOverlay(IDirect3DDevice9* dev) {
     dev->GetRenderTarget(0, &oldRt);
     dev->SetRenderTarget(0, bb);
 
+    IDirect3DStateBlock9* sb = nullptr;
+    dev->CreateStateBlock(D3DSBT_ALL, &sb);  // FillRect changes render states; restore the game's
     if (SUCCEEDED(dev->BeginScene())) {
         int W = desc.Width, H = desc.Height;
         const Settings& st = g_set;
         if (!g_supported)
-            DrawLine(dev, st.font, 22, 0xFFFF5050, true, "srmod: unsupported game version (see srmod.log)",
-                     0.5f, 0.05f, 4, W, H);
+            DrawLine(dev, st.font, 22, true, "", 0, "srmod: unsupported game version (see srmod.log)", 0xFFFF5050,
+                     0, 0.5f, 0.05f, 4, W, H);
         for (int i = 0; i < W_COUNT; i++) {
             const Widget& w = st.w[i];
             if (!w.on) continue;
             if (i == W_SPLITS) DrawSplits(dev, st, w, W, H);
-            else DrawLine(dev, st.font, w.size, w.color, st.shadow, w.label + WidgetText(i, st), w.x, w.y, w.anchor, W, H);
+            else DrawLine(dev, st.font, w.size, st.shadow, w.label, w.labelColor, WidgetText(i, st), w.color,
+                          w.bg, w.x, w.y, w.anchor, W, H);
         }
         if (GetTickCount() < g_msgUntil)
-            DrawLine(dev, st.font, 30, 0xFFFFD040, true, g_msg, 0.5f, 0.2f, 4, W, H);
+            DrawLine(dev, st.font, 30, true, "", 0, g_msg, 0xFFFFD040, 0x90000000, 0.5f, 0.2f, 4, W, H);
         dev->EndScene();
     }
+    if (sb) { sb->Apply(); sb->Release(); }
 
     dev->SetRenderTarget(0, oldRt);
     dev->SetViewport(&vp);

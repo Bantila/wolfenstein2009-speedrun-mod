@@ -85,6 +85,8 @@ struct Run {
     // when the previous map was completed cleanly and is PB-eligible.
     bool MapLoaded(const std::string& newMap, std::string* outMap, double* outIgt) {
         if (newMap == map) return false;           // reload / death / quickload on same map
+        // Main menu is transparent: no split, map timers kept; continuing the same map is a reload.
+        if (newMap == "menu" && !map.empty()) return false;
         bool eligible = mapClean && !map.empty() && map != "menu";
         if (eligible) { *outMap = map; *outIgt = mapIgt; }
         bool transition = !map.empty();            // first map after launch isn't a clean entry
