@@ -1755,24 +1755,12 @@ static HRESULT __stdcall hkReset(IDirect3DDevice9* dev, D3DPRESENT_PARAMETERS* p
 }
 
 static bool Hook(void** vtable, int idx, void* hook, void** orig) {
-    BYTE* fn = (BYTE*)vtable[idx];
     DWORD old;
-    bool pad = true;
-    for (int i = 1; i <= 5; i++) pad &= fn[-i] == 0x90 || fn[-i] == 0xCC;
-    if (fn[0] == 0x8B && fn[1] == 0xFF && pad) {
-        VirtualProtect(fn - 5, 7, PAGE_EXECUTE_READWRITE, &old);
-        *orig = fn + 2;
-        fn[-5] = 0xE9; *(int*)(fn - 4) = int((BYTE*)hook - fn);
-        *(WORD*)fn = 0xF9EB;
-        VirtualProtect(fn - 5, 7, old, &old);
-        FlushInstructionCache(GetCurrentProcess(), fn - 5, 7);
-        Log("hook %d: hotpatch", idx);
-    } else {
-        VirtualProtect(&vtable[idx], 4, PAGE_READWRITE, &old);
-        *orig = vtable[idx]; vtable[idx] = hook;
-        VirtualProtect(&vtable[idx], 4, old, &old);
-        Log("hook %d: vtable", idx);
-    }
+    VirtualProtect(&vtable[idx], sizeof(void*), PAGE_READWRITE, &old);
+    *orig = vtable[idx];
+    vtable[idx] = hook;
+    VirtualProtect(&vtable[idx], sizeof(void*), old, &old);
+    Log("hook %d: vtable (%p -> %p)", idx, *orig, hook);
     return true;
 }
 
