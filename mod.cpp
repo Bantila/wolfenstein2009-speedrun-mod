@@ -258,13 +258,13 @@ static volatile long g_binkOpen;
 static bool g_supported;
 static bool g_visible = true;
 static bool g_menuOpen = false;
-static bool g_wizardOpen = false;
+static bool g_wizardOpen = true;
 static bool g_wasMenuOpen = false;
 static int  g_rebindKeyIndex = -1;
 static int  g_selectedWidget = 0;
 static int  g_selectedSpawnEntity = 0;
 static int  g_selectedWarpMap = 0;
-static std::mutex g_mx;
+static std::recursive_mutex g_mx;
 static std::string g_msg;
 static DWORD g_msgUntil;
 static float g_pos[3], g_speed, g_maxSpeed;
@@ -295,7 +295,7 @@ void Log(const char* fmt, ...) {
 }
 
 static void Message(const std::string& s) {
-    std::lock_guard<std::mutex> lk(g_mx);
+    std::lock_guard<std::recursive_mutex> lk(g_mx);
     g_msg = s;
     g_msgUntil = GetTickCount() + 3500;
 }
@@ -621,7 +621,7 @@ static LRESULT CALLBACK hkWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
     if (g_rebindKeyIndex >= 0) {
         if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) {
             if (wParam != VK_ESCAPE) {
-                std::lock_guard<std::mutex> lk(g_mx);
+                std::lock_guard<std::recursive_mutex> lk(g_mx);
                 g_set.keys[g_rebindKeyIndex] = (int)wParam;
                 SaveSettings(g_set);
             }
@@ -710,7 +710,7 @@ static void Poll() {
 
         std::string cmds;
         {
-            std::lock_guard<std::mutex> lk(g_mx);
+            std::lock_guard<std::recursive_mutex> lk(g_mx);
             g_havePlayer = s.player;
             bool active = s.player && !s.loading && !s.paused;
 
@@ -730,6 +730,7 @@ static void Poll() {
                 if (newMap == "menu") {
                     g_run.map = "menu";
                     g_run.state = Run::Idle;
+                    g_wizardOpen = true;
                 } else {
                     bool warpProtected = (g_run.state == Run::Running && (newMap == "trainyard" || newMap == "train_station"));
                     if (warpProtected) {
@@ -1884,32 +1885,39 @@ static void* BinkOrig(const char* name) {
 }
 
 extern "C" void* __stdcall SrBinkOpen(const char* file, unsigned flags) {
-    static auto fn = (void*(__stdcall*)(const char*, unsigned))BinkOrig("_BinkOpen@8");
-    void* h = fn ? fn(file, flags) : nullptr;
-    if (h) InterlockedIncrement(&g_binkOpen);
+    try {
+        static auto fn = (void*(__stdcall*)(const char*, unsigned))BinkOrig("_BinkOpen@8");
+        void* h = fn ? fn(file, flags) : nullptr;
+        if (h) InterlockedIncrement(&g_binkOpen);
 
-    if (file) {
-        Log("BinkOpen: %s", file);
-        std::string fnLower = file;
-        for (char& c : fnLower) c = (char)tolower((unsigned char)c);
-        if (fnLower.find("wolf_campaign_start") != std::string::npos) {
-            std::lock_guard<std::mutex> lk(g_mx);
-            bool isMidRun = (g_run.state == Run::Running && g_havePlayer && g_run.map != "menu");
-            if (isMidRun) {
-                Log("WARP PROTECTION: Suppressed cutscene reset during active run (map=%s)", g_run.map.c_str());
-            } else if (g_set.autoStartCutscene) {
-                g_wizardOpen = false;
-                g_menuOpen = false;
-                g_run.Start();
-                memset(g_allMissionsDone, 0, sizeof(g_allMissionsDone));
-                g_run.mapClean = true;
-                g_pbSplits = ReadPbSplits(GetPbCategoryKey(g_set));
-                Message("Operation Launched (" + GetFullCategoryDisplay(g_set) + ")");
-                Log("Campaign start cutscene opened: %s -> timer reset and started cleanly", file);
+        if (file) {
+            Log("BinkOpen: %s", file);
+            std::string fnLower = file;
+            for (char& c : fnLower) c = (char)tolower((unsigned char)c);
+            if (fnLower.find("wolf_campaign_start") != std::string::npos) {
+                std::lock_guard<std::recursive_mutex> lk(g_mx);
+                bool isMidRun = (g_run.state == Run::Running && g_havePlayer && g_run.map != "menu");
+                if (isMidRun) {
+                    Log("WARP PROTECTION: Suppressed cutscene reset during active run (map=%s)", g_run.map.c_str());
+                } else if (g_set.autoStartCutscene) {
+                    g_wizardOpen = false;
+                    g_menuOpen = false;
+                    g_run.Start();
+                    memset(g_allMissionsDone, 0, sizeof(g_allMissionsDone));
+                    g_run.mapClean = true;
+                    g_pbSplits = ReadPbSplits(GetPbCategoryKey(g_set));
+                    Log("Campaign start cutscene opened: %s -> timer reset and started cleanly", file);
+                }
             }
         }
+        return h;
+    } catch (const std::exception& e) {
+        Log("Exception in SrBinkOpen: %s", e.what());
+        return nullptr;
+    } catch (...) {
+        Log("Unknown exception in SrBinkOpen");
+        return nullptr;
     }
-    return h;
 }
 
 extern "C" void __stdcall SrBinkClose(void* h) {
