@@ -77,7 +77,7 @@ const char* kKeyNames[K_COUNT] = {
     "SavePos", "LoadPos", "QuickSave", "QuickLoad", "RestartCheckpoint"
 };
 const int kDefaultKeys[K_COUNT] = {
-    VK_F1, VK_F2, VK_F6, VK_F7, VK_F8,
+    VK_F1, VK_F2, VK_F6, VK_F8, VK_F10,
     VK_NUMPAD1, VK_NUMPAD2, VK_F5, VK_F9, VK_F11
 };
 
@@ -631,14 +631,16 @@ static LRESULT CALLBACK hkWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
     }
 
     if (msg == WM_KEYDOWN) {
-        if ((int)wParam == g_set.keys[K_MENU]) {
+        if ((int)wParam == g_set.keys[K_MENU] || wParam == VK_F1 || wParam == VK_INSERT) {
             g_menuOpen = !g_menuOpen;
             if (g_menuOpen) g_wizardOpen = false;
+            Log("hkWndProc: Menu toggled via key 0x%X -> %d", (int)wParam, g_menuOpen);
             return 0;
         }
-        if ((int)wParam == g_set.keys[K_NEWRUN] || wParam == VK_HOME) {
+        if ((int)wParam == g_set.keys[K_NEWRUN] || wParam == VK_F2 || wParam == VK_HOME) {
             g_wizardOpen = !g_wizardOpen;
             if (g_wizardOpen) g_menuOpen = false;
+            Log("hkWndProc: Wizard toggled via key 0x%X -> %d", (int)wParam, g_wizardOpen);
             return 0;
         }
     }
@@ -653,9 +655,10 @@ static LRESULT CALLBACK hkWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
     }
 
     if (g_menuOpen || g_wizardOpen) {
-        if (msg == WM_KEYDOWN && wParam == VK_ESCAPE) {
+        if (msg == WM_KEYDOWN && wParam == VK_ESCAPE && g_binkOpen == 0) {
             g_menuOpen = false;
             g_wizardOpen = false;
+            Log("hkWndProc: Menus dismissed via Escape");
             return 0;
         }
         if (g_imguiInit && ImGui::GetCurrentContext() && SafeImGuiWndProc(hwnd, msg, wParam, lParam))
@@ -731,6 +734,7 @@ static void Poll() {
                     g_run.map = "menu";
                     g_run.state = Run::Idle;
                     g_wizardOpen = true;
+                    Log("Poll: Map set to menu -> g_wizardOpen armed");
                 } else {
                     bool warpProtected = (g_run.state == Run::Running && (newMap == "trainyard" || newMap == "train_station"));
                     if (warpProtected) {
@@ -778,52 +782,86 @@ static void Poll() {
                 }
             }
 
-            if (GameFocused() && !g_menuOpen && !g_wizardOpen) {
-                for (int k = 0; k < K_COUNT; k++) {
-                    if (k == K_MENU || k == K_NEWRUN) continue;
-                    int vk = g_set.keys[k];
-                    if (vk && (GetAsyncKeyState(vk) & 1)) {
-                        switch (k) {
-                        case K_OVERLAY: g_visible = !g_visible; break;
-                        case K_STARTFINISH:
-                            if (g_run.state == Run::Running) g_run.Finish();
-                            else {
-                                g_run.Reset(); g_run.Start();
-                                g_pbSplits = ReadPbSplits(GetPbCategoryKey(g_set));
-                            }
-                            break;
-                        case K_RESET: g_run.Reset(); break;
-                        case K_SAVE_POS:
-                            if (s.player) {
-                                memcpy(g_savePos, s.pos, sizeof g_savePos);
-                                g_hasSavedPos = true;
-                                Message("Position Saved: " + std::to_string((int)s.pos[0]) + " " + std::to_string((int)s.pos[1]));
-                            }
-                            break;
-                        case K_LOAD_POS:
-                            if (g_hasSavedPos && s.player) {
-                                if (g_set.ruleset == RULESET_RESTRICTED) {
-                                    Message("[RESTRICTED] Teleportation is blocked in Restricted mode!");
-                                } else {
-                                    char tpBuf[128];
-                                    snprintf(tpBuf, sizeof tpBuf, "teleport %f %f %f\n", g_savePos[0], g_savePos[1], g_savePos[2]);
-                                    cmds += tpBuf;
-                                    g_run.practice = true;
-                                    Message("Teleported to Saved Position [PRACTICE]");
+            if (GameFocused()) {
+                static bool prevDown[256] = {};
+                auto JustPressed = [&](int vk) -> bool {
+                    if (vk <= 0 || vk >= 256) return false;
+                    bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
+                    bool pressed = down && !prevDown[vk];
+                    prevDown[vk] = down;
+                    return pressed;
+                };
+
+                // Hotkey for Tactical Menu: F1 or Insert or configured key
+                if (JustPressed(g_set.keys[K_MENU]) || JustPressed(VK_F1) || JustPressed(VK_INSERT)) {
+                    g_menuOpen = !g_menuOpen;
+                    if (g_menuOpen) g_wizardOpen = false;
+                    Log("Poll: Menu toggled via hotkey -> %d", g_menuOpen);
+                }
+
+                // Hotkey for Run Setup Wizard: F2 or Home or configured key
+                if (JustPressed(g_set.keys[K_NEWRUN]) || JustPressed(VK_F2) || JustPressed(VK_HOME)) {
+                    g_wizardOpen = !g_wizardOpen;
+                    if (g_wizardOpen) g_menuOpen = false;
+                    Log("Poll: Wizard toggled via hotkey -> %d", g_wizardOpen);
+                }
+
+                // Hotkey for Escape: dismiss active menu/wizard if open (only when not watching bink movies)
+                if (JustPressed(VK_ESCAPE)) {
+                    if ((g_menuOpen || g_wizardOpen) && g_binkOpen == 0) {
+                        g_menuOpen = false;
+                        g_wizardOpen = false;
+                        Log("Poll: Menus dismissed via Esc");
+                    }
+                }
+
+                // In-game gameplay hotkeys (only active when menus are NOT open)
+                if (!g_menuOpen && !g_wizardOpen) {
+                    for (int k = 2; k < K_COUNT; k++) {
+                        int vk = g_set.keys[k];
+                        if (vk && JustPressed(vk)) {
+                            switch (k) {
+                            case K_OVERLAY: g_visible = !g_visible; break;
+                            case K_STARTFINISH:
+                                if (g_run.state == Run::Running) g_run.Finish();
+                                else {
+                                    g_run.Reset(); g_run.Start();
+                                    g_pbSplits = ReadPbSplits(GetPbCategoryKey(g_set));
                                 }
+                                break;
+                            case K_RESET: g_run.Reset(); break;
+                            case K_SAVE_POS:
+                                if (s.player) {
+                                    memcpy(g_savePos, s.pos, sizeof g_savePos);
+                                    g_hasSavedPos = true;
+                                    Message("Position Saved: " + std::to_string((int)s.pos[0]) + " " + std::to_string((int)s.pos[1]));
+                                }
+                                break;
+                            case K_LOAD_POS:
+                                if (g_hasSavedPos && s.player) {
+                                    if (g_set.ruleset == RULESET_RESTRICTED) {
+                                        Message("[RESTRICTED] Teleportation is blocked in Restricted mode!");
+                                    } else {
+                                        char tpBuf[128];
+                                        snprintf(tpBuf, sizeof tpBuf, "teleport %f %f %f\n", g_savePos[0], g_savePos[1], g_savePos[2]);
+                                        cmds += tpBuf;
+                                        g_run.practice = true;
+                                        Message("Teleported to Saved Position [PRACTICE]");
+                                    }
+                                }
+                                break;
+                            case K_QUICKSAVE:
+                                if (g_set.ruleset == RULESET_RESTRICTED) Message("[RESTRICTED] Quicksaves are forbidden!");
+                                else { cmds += "contentManagerCommand save full\n"; Message("Quick Save Created"); }
+                                break;
+                            case K_QUICKLOAD:
+                                if (g_set.ruleset == RULESET_RESTRICTED) Message("[RESTRICTED] Quickloads are forbidden!");
+                                else { cmds += "contentManagerCommand loadLast\n"; Message("Quick Load Loaded"); }
+                                break;
+                            case K_RESTART_CP:
+                                cmds += "ScaleformDiedRestart\n"; Message("Restarting Checkpoint...");
+                                break;
                             }
-                            break;
-                        case K_QUICKSAVE:
-                            if (g_set.ruleset == RULESET_RESTRICTED) Message("[RESTRICTED] Quicksaves are forbidden!");
-                            else { cmds += "contentManagerCommand save full\n"; Message("Quick Save Created"); }
-                            break;
-                        case K_QUICKLOAD:
-                            if (g_set.ruleset == RULESET_RESTRICTED) Message("[RESTRICTED] Quickloads are forbidden!");
-                            else { cmds += "contentManagerCommand loadLast\n"; Message("Quick Load Loaded"); }
-                            break;
-                        case K_RESTART_CP:
-                            cmds += "ScaleformDiedRestart\n"; Message("Restarting Checkpoint...");
-                            break;
                         }
                     }
                 }
@@ -935,6 +973,11 @@ static Settings LoadSettings() {
     for (int i = 0; i < K_COUNT; i++) {
         s.keys[i] = GetPrivateProfileIntA("Keys", kKeyNames[i], kDefaultKeys[i], g_ini);
     }
+    // Sanitize legacy or conflicting hotkeys
+    if (s.keys[K_MENU] == 97 || s.keys[K_MENU] <= 0) s.keys[K_MENU] = VK_F1;
+    if (s.keys[K_NEWRUN] <= 0) s.keys[K_NEWRUN] = VK_F2;
+    if (s.keys[K_STARTFINISH] == 118) s.keys[K_STARTFINISH] = VK_F8; // Free F7 exclusively for Advanced Configurator
+    if (s.keys[K_RESET] == 119) s.keys[K_RESET] = VK_F10;
     return s;
 }
 
@@ -1668,28 +1711,36 @@ static const char* GetKeyDisplayName(int vk) {
     }
 }
 
-static void SafeRenderImGui(IDirect3DDevice9* dev) {
+static void SafeRenderImGui(IDirect3DDevice9* dev, int screenW, int screenH) {
     __try {
+        ImGuiIO& io = ImGui::GetIO();
+        if (screenW > 0 && screenH > 0) {
+            io.DisplaySize = ImVec2((float)screenW, (float)screenH);
+        }
+
         ImGui_ImplDX9_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
-        ImGuiIO& io = ImGui::GetIO();
         io.MouseDrawCursor = (g_menuOpen || g_wizardOpen);
 
-        // If in main menu, provide an interactive floating launcher button
+        // Prominent interactive launcher pill on the main menu
         bool isMainMenu = (g_run.map == "menu" || g_run.map.empty());
         if (isMainMenu && !g_menuOpen && !g_wizardOpen && g_run.state != Run::Running) {
-            ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f - 180.0f, io.DisplaySize.y - 72.0f), ImGuiCond_Always);
-            ImGui::SetNextWindowSize(ImVec2(360, 48), ImGuiCond_Always);
-            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.09f, 0.11f, 0.92f));
-            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 0.72f, 0.20f, 0.85f));
-            if (ImGui::Begin("##MainMenuLauncher", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar)) {
+            float btnW = 460.0f;
+            float btnH = 52.0f;
+            ImGui::SetNextWindowPos(ImVec2((io.DisplaySize.x - btnW) * 0.5f, io.DisplaySize.y - 84.0f), ImGuiCond_Always);
+            ImGui::SetNextWindowSize(ImVec2(btnW, btnH), ImGuiCond_Always);
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.09f, 0.11f, 0.96f));
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 0.72f, 0.20f, 0.95f));
+            if (ImGui::Begin("##MainMenuLauncher", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings)) {
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.85f, 0.58f, 0.12f, 1.0f));
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.95f, 0.68f, 0.18f, 1.0f));
-                if (ImGui::Button("START SPEEDRUN WIZARD (F2 / Home)", ImVec2(344, 32))) {
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.75f, 0.48f, 0.08f, 1.0f));
+                if (ImGui::Button("START SPEEDRUN WIZARD  [F2 / Home]", ImVec2(btnW - 16.0f, 36.0f))) {
                     g_wizardOpen = true;
+                    Log("Launcher Button Clicked: g_wizardOpen = true");
                 }
-                ImGui::PopStyleColor(2);
+                ImGui::PopStyleColor(3);
             }
             ImGui::End();
             ImGui::PopStyleColor(2);
@@ -1702,6 +1753,7 @@ static void SafeRenderImGui(IDirect3DDevice9* dev) {
         ImGui::Render();
         ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        Log("CRITICAL: Exception 0x%08X in SafeRenderImGui!", GetExceptionCode());
         g_menuOpen = false;
         g_wizardOpen = false;
     }
@@ -1773,8 +1825,9 @@ static void DrawOverlay(IDirect3DDevice9* dev) {
     IDirect3DStateBlock9* sb = nullptr;
     dev->CreateStateBlock(D3DSBT_ALL, &sb);
 
-    bool sceneBegun = SUCCEEDED(dev->BeginScene());
-    if (sceneBegun) {
+    HRESULT hrScene = dev->BeginScene();
+    bool sceneBegun = SUCCEEDED(hrScene);
+    if (sceneBegun || hrScene == D3DERR_INVALIDCALL) {
         int W = desc.Width, H = desc.Height;
         const Settings& st = g_set;
 
@@ -1807,8 +1860,8 @@ static void DrawOverlay(IDirect3DDevice9* dev) {
             if (!g_menuOpen && !g_wizardOpen) {
                 bool isMainMenu = (g_run.map == "menu" || g_run.map.empty());
                 std::string prompt = isMainMenu
-                    ? "[F2] START SPEEDRUN WIZARD  |  [F1] ADVANCED CONFIGURATOR & CHEATS"
-                    : "[F1] Tactical Suite  |  [F2] Run Setup";
+                    ? "[F1 / Ins] SPEEDRUN CONFIG & CHEATS  |  [F2 / Home] SPEEDRUN WIZARD  |  [F7] ADVANCED CONFIGURATOR"
+                    : "[F1 / Ins] Tactical Suite  |  [F2 / Home] Run Setup  |  [F7] Advanced Config";
                 D3DCOLOR promptColor = isMainMenu ? 0xFFFFB834 : 0x80FFFFFF;
                 DrawLine(dev, st.font, 14, false, "", 0, prompt, promptColor, 0x60000000, 0.005f, 0.995f, 2, W, H);
             }
@@ -1816,7 +1869,7 @@ static void DrawOverlay(IDirect3DDevice9* dev) {
 
         // Render Dear ImGui menus
         if (g_imguiInit) {
-            SafeRenderImGui(dev);
+            SafeRenderImGui(dev, W, H);
         }
 
         if (sceneBegun) dev->EndScene();
