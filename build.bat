@@ -13,5 +13,10 @@ cl /nologo /EHsc /O2 /MT /LD /D_CRT_SECURE_NO_WARNINGS /Iimgui /Iimgui\backends 
 
 "%WINDIR%\Microsoft.NET\Framework\v4.0.30319\csc.exe" /nologo /target:winexe /platform:anycpu /optimize /codepage:65001 /out:out\SrmodLauncher.exe launcher.cs || exit /b 1
 
-if "%1"=="deploy" copy /y out\srmod.dll ..\SP\ >nul && copy /y out\SrmodLauncher.exe ..\SP\ >nul && echo Deployed to ..\SP
+if "%1"=="deploy" (
+    copy /y out\srmod.dll ..\SP\ >nul
+    copy /y out\SrmodLauncher.exe ..\SP\ >nul
+    if exist ..\SP\binkw32_orig.dll copy /y out\srmod.dll ..\SP\binkw32.dll >nul
+    echo Deployed to ..\SP
+)
 echo Build OK
