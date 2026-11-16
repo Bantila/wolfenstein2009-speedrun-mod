@@ -14,11 +14,12 @@
 
 #pragma once
 
-//---- Define assertion handler. Defaults to calling assert().
-// - If your macro uses multiple statements, make sure is enclosed in a 'do { .. } while (0)' block so it can be used as a single statement.
-// - Compiling with NDEBUG will usually strip out assert() to nothing, which is NOT recommended because we use asserts to notify of programmer mistakes.
-//#define IM_ASSERT(_EXPR)  MyAssert(_EXPR)
-//#define IM_ASSERT(_EXPR)  ((void)(_EXPR))     // Disable asserts
+#define IMGUI_USE_BGRA_PACKED_COLOR
+
+// Safe non-terminating assertion handler for production game mod
+extern void Log(const char* fmt, ...);
+#define IM_ASSERT(_EXPR) do { if (!(_EXPR)) { Log("[IMGUI ASSERT] %s (%s:%d)", #_EXPR, __FILE__, __LINE__); } } while(0)
+
 
 //---- Define attributes of all API symbols declarations, e.g. for DLL under Windows
 // Using Dear ImGui via a shared library is not recommended, because of function call overhead and because we don't guarantee backward nor forward ABI compatibility.

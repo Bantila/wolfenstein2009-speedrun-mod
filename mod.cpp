@@ -230,7 +230,7 @@ struct Settings {
 };
 
 // Forward declarations
-static void Log(const char* fmt, ...);
+void Log(const char* fmt, ...);
 static void Message(const std::string& s);
 static void SaveSettings(const Settings& s);
 static Settings LoadSettings();
@@ -284,7 +284,7 @@ static std::map<int, ID3DXFont*> g_fonts;
 static bool g_fontsDirty = false;
 
 // ---- Utilities -------------------------------------------------------------------------------
-static void Log(const char* fmt, ...) {
+void Log(const char* fmt, ...) {
     FILE* f = fopen(g_log, "a");
     if (!f) return;
     va_list ap; va_start(ap, fmt);
@@ -608,6 +608,14 @@ static void StartNewRunFromWizard() {
         g_set.category.c_str(), g_set.difficulty, g_set.ruleset);
 }
 
+static bool SafeImGuiWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    __try {
+        return ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam) != 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 // Window message handler hook
 static LRESULT CALLBACK hkWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (g_rebindKeyIndex >= 0) {
@@ -628,7 +636,7 @@ static LRESULT CALLBACK hkWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
             if (g_menuOpen) g_wizardOpen = false;
             return 0;
         }
-        if ((int)wParam == g_set.keys[K_NEWRUN]) {
+        if ((int)wParam == g_set.keys[K_NEWRUN] || wParam == VK_HOME) {
             g_wizardOpen = !g_wizardOpen;
             if (g_wizardOpen) g_menuOpen = false;
             return 0;
@@ -650,7 +658,7 @@ static LRESULT CALLBACK hkWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
             g_wizardOpen = false;
             return 0;
         }
-        if (g_imguiInit && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
+        if (g_imguiInit && ImGui::GetCurrentContext() && SafeImGuiWndProc(hwnd, msg, wParam, lParam))
             return 1;
         // Suppress in-game player actions while menu/wizard is open
         if ((msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) ||
@@ -658,7 +666,7 @@ static LRESULT CALLBACK hkWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
             return 0;
         }
     }
-    return CallWindowProcA(g_origWndProc, hwnd, msg, wParam, lParam);
+    return g_origWndProc ? CallWindowProcA(g_origWndProc, hwnd, msg, wParam, lParam) : DefWindowProcA(hwnd, msg, wParam, lParam);
 }
 
 // Background poll loop
@@ -721,6 +729,7 @@ static void Poll() {
                 std::string newMap = s.map;
                 if (newMap == "menu") {
                     g_run.map = "menu";
+                    g_run.state = Run::Idle;
                 } else {
                     bool warpProtected = (g_run.state == Run::Running && (newMap == "trainyard" || newMap == "train_station"));
                     if (warpProtected) {
@@ -971,6 +980,24 @@ static void Text(ID3DXFont* f, const std::string& str, RECT r, DWORD fmt, D3DCOL
 // High-tech telemetry gauge panel with smoked glass & vertical accent bar
 static void DrawTelemetryPanel(IDirect3DDevice9* dev, int x0, int y0, int x1, int y1, D3DCOLOR bg, D3DCOLOR accent) {
     struct V { float x, y, z, rhw; D3DCOLOR col; };
+
+    // Reset fixed-function states for clean 2D HUD rendering regardless of 3D shaders
+    dev->SetPixelShader(nullptr);
+    dev->SetVertexShader(nullptr);
+    dev->SetTexture(0, nullptr);
+    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+    dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+    dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    dev->SetRenderState(D3DRS_ZENABLE, FALSE);
+    dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    dev->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+    dev->SetRenderState(D3DRS_SHADEMODE, D3DSHADE_FLAT);
+    dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+    dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+    dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+    dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+
     dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
 
     // Dark smoked glass background
@@ -1389,7 +1416,7 @@ static void DrawInGameMenu(IDirect3DDevice9* dev) {
         if (ImGui::BeginTabBar("TacticalTabs")) {
 
             // TAB 1: RUN DISPATCH
-            if (ImGui::BeginTabItem("  [ ⚔ OPERATION SETUP ]  ")) {
+            if (ImGui::BeginTabItem("  [ OPERATION SETUP ]  ")) {
                 ImGui::Spacing();
                 ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "Speedrun Setup & Categories");
                 ImGui::Spacing();
@@ -1416,7 +1443,7 @@ static void DrawInGameMenu(IDirect3DDevice9* dev) {
             }
 
             // TAB 2: CHEATS & ARSENAL
-            if (ImGui::BeginTabItem("  [ ⚡ CHEATS & ARSENAL ]  ")) {
+            if (ImGui::BeginTabItem("  [ CHEATS & ARSENAL ]  ")) {
                 ImGui::Spacing();
 
                 // Unlocks & DLC
@@ -1495,7 +1522,7 @@ static void DrawInGameMenu(IDirect3DDevice9* dev) {
             }
 
             // TAB 3: CAMERA & VISUALS
-            if (ImGui::BeginTabItem("  [ 👁 CAMERA & VISUALS ]  ")) {
+            if (ImGui::BeginTabItem("  [ CAMERA & VISUALS ]  ")) {
                 ImGui::Spacing();
                 ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "Field of View (FOV)");
                 if (ImGui::SliderInt("##FOV", &g_set.fov, 60, 120, "%d deg")) {
@@ -1541,7 +1568,7 @@ static void DrawInGameMenu(IDirect3DDevice9* dev) {
             }
 
             // TAB 4: HUD & TELEMETRY
-            if (ImGui::BeginTabItem("  [ 📊 HUD & TELEMETRY ]  ")) {
+            if (ImGui::BeginTabItem("  [ HUD & TELEMETRY ]  ")) {
                 ImGui::Spacing();
                 ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "Master Speedrun Overlay");
                 ToggleSwitch("Master Overlay Visible", &g_visible, "Show or hide in-game speedrun gauges");
@@ -1567,7 +1594,7 @@ static void DrawInGameMenu(IDirect3DDevice9* dev) {
             }
 
             // TAB 5: RECORDS & SPLITS
-            if (ImGui::BeginTabItem("  [ ⏱ RECORDS & SPLITS ]  ")) {
+            if (ImGui::BeginTabItem("  [ RECORDS & SPLITS ]  ")) {
                 ImGui::Spacing();
                 std::string catKey = GetPbCategoryKey(g_set);
                 ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "Records Profile: %s", catKey.c_str());
@@ -1595,7 +1622,7 @@ static void DrawInGameMenu(IDirect3DDevice9* dev) {
             }
 
             // TAB 6: HOTKEYS
-            if (ImGui::BeginTabItem("  [ ⌨ HOTKEYS ]  ")) {
+            if (ImGui::BeginTabItem("  [ HOTKEYS ]  ")) {
                 ImGui::Spacing();
                 ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "Click any button to rebind (Esc cancels):");
                 ImGui::Spacing();
@@ -1612,8 +1639,8 @@ static void DrawInGameMenu(IDirect3DDevice9* dev) {
                 ImGui::EndTabItem();
             }
 
+            ImGui::EndTabBar();
         }
-        ImGui::EndTabBar();
 
         // Footer Bar
         ImGui::Spacing();
@@ -1637,6 +1664,45 @@ static const char* GetKeyDisplayName(int vk) {
     case VK_PRIOR: return "Page Up"; case VK_NEXT: return "Page Down";
     case VK_OEM_3: return "~ (Tilde)"; case VK_OEM_MINUS: return "-"; case VK_OEM_PLUS: return "+";
     default: snprintf(buf, sizeof buf, "Key 0x%02X", vk); return buf;
+    }
+}
+
+static void SafeRenderImGui(IDirect3DDevice9* dev) {
+    __try {
+        ImGui_ImplDX9_NewFrame();
+        ImGui_ImplWin32_NewFrame();
+        ImGui::NewFrame();
+        ImGuiIO& io = ImGui::GetIO();
+        io.MouseDrawCursor = (g_menuOpen || g_wizardOpen);
+
+        // If in main menu, provide an interactive floating launcher button
+        bool isMainMenu = (g_run.map == "menu" || g_run.map.empty());
+        if (isMainMenu && !g_menuOpen && !g_wizardOpen && g_run.state != Run::Running) {
+            ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f - 180.0f, io.DisplaySize.y - 72.0f), ImGuiCond_Always);
+            ImGui::SetNextWindowSize(ImVec2(360, 48), ImGuiCond_Always);
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.09f, 0.11f, 0.92f));
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(1.0f, 0.72f, 0.20f, 0.85f));
+            if (ImGui::Begin("##MainMenuLauncher", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar)) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.85f, 0.58f, 0.12f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.95f, 0.68f, 0.18f, 1.0f));
+                if (ImGui::Button("START SPEEDRUN WIZARD (F2 / Home)", ImVec2(344, 32))) {
+                    g_wizardOpen = true;
+                }
+                ImGui::PopStyleColor(2);
+            }
+            ImGui::End();
+            ImGui::PopStyleColor(2);
+        }
+
+        if (g_menuOpen) DrawInGameMenu(dev);
+        if (g_wizardOpen) DrawNewRunWizard(dev);
+
+        ImGui::EndFrame();
+        ImGui::Render();
+        ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_menuOpen = false;
+        g_wizardOpen = false;
     }
 }
 
@@ -1685,7 +1751,7 @@ static void DrawOverlay(IDirect3DDevice9* dev) {
 
             ImGui_ImplWin32_Init(g_gameHwnd);
             ImGui_ImplDX9_Init(dev);
-            g_origWndProc = (WNDPROC)SetWindowLongPtrA(g_gameHwnd, GWLP_WNDPROC, (LONG_PTR)hkWndProc);
+            if (!g_origWndProc) g_origWndProc = (WNDPROC)SetWindowLongPtrA(g_gameHwnd, GWLP_WNDPROC, (LONG_PTR)hkWndProc);
             g_imguiInit = true;
             Log("ImGui initialized on HWND %p with Advanced Configurator Theme & JetBrains Mono", g_gameHwnd);
         }
@@ -1749,15 +1815,7 @@ static void DrawOverlay(IDirect3DDevice9* dev) {
 
         // Render Dear ImGui menus
         if (g_imguiInit) {
-            ImGui_ImplDX9_NewFrame();
-            ImGui_ImplWin32_NewFrame();
-            ImGui::NewFrame();
-            ImGui::GetIO().MouseDrawCursor = (g_menuOpen || g_wizardOpen);
-            if (g_menuOpen) DrawInGameMenu(dev);
-            if (g_wizardOpen) DrawNewRunWizard(dev);
-            ImGui::EndFrame();
-            ImGui::Render();
-            ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+            SafeRenderImGui(dev);
         }
 
         if (sceneBegun) dev->EndScene();
@@ -1840,17 +1898,14 @@ extern "C" void* __stdcall SrBinkOpen(const char* file, unsigned flags) {
             if (isMidRun) {
                 Log("WARP PROTECTION: Suppressed cutscene reset during active run (map=%s)", g_run.map.c_str());
             } else if (g_set.autoStartCutscene) {
-                if (!g_wizardOpen && g_run.state != Run::Running) {
-                    g_wizardOpen = true;
-                    g_menuOpen = false;
-                    Log("Campaign start cutscene intercepted -> Opened in-game Run Setup Wizard");
-                }
+                g_wizardOpen = false;
+                g_menuOpen = false;
                 g_run.Start();
                 memset(g_allMissionsDone, 0, sizeof(g_allMissionsDone));
                 g_run.mapClean = true;
                 g_pbSplits = ReadPbSplits(GetPbCategoryKey(g_set));
                 Message("Operation Launched (" + GetFullCategoryDisplay(g_set) + ")");
-                Log("Campaign start cutscene opened: %s -> timer reset and started", file);
+                Log("Campaign start cutscene opened: %s -> timer reset and started cleanly", file);
             }
         }
     }
@@ -1866,6 +1921,7 @@ extern "C" void __stdcall SrBinkClose(void* h) {
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(inst);
+        _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
         GetModuleFileNameA(inst, g_dir, MAX_PATH);
         char* sl = strrchr(g_dir, '\\');
         if (sl) *sl = 0;
