@@ -52,6 +52,27 @@ int main() {
     assert(!a.MapLoaded("farm", &m, &t) && a.mapIgt == 2);   // continuing = reload, timer kept
     assert(a.splits.size() == 1);
 
+    // Warp Trick simulation:
+    // Mid-run replaying a mission (e.g. trainyard) and immediately returning
+    // MUST NOT reset total run RTA or IGT!
+    Run w; w.MapLoaded("menu", &m, &t); w.MapLoaded("trainyard", &m, &t); w.Start();
+    w.Tick(10); // 10s of gameplay on trainyard
+    w.MapLoaded("downtown", &m, &t);
+    w.Tick(20); // 20s of gameplay on downtown (total IGT = 30)
+    assert(w.igt == 30 && w.state == Run::Running);
+    // Runner does warp trick: enters trainyard replay
+    w.SetLoading(true); w.Tick(1); w.SetLoading(false);
+    w.MapLoaded("trainyard", &m, &t);
+    w.Tick(2); // 2 seconds in trainyard before aborting
+    // Runner aborts warp trick: loads back to downtown end
+    w.SetLoading(true); w.Tick(1); w.SetLoading(false);
+    w.MapLoaded("downtown", &m, &t);
+    w.Tick(5);
+    // Total run IGT must be 30 + 2 + 5 = 37, RTA must be 30 + 1 + 2 + 1 + 5 = 39
+    assert(w.state == Run::Running);
+    assert(w.igt == 37);
+    assert(w.rta == 39);
+
     r.Finish(); r.Tick(5);
     assert(r.rta == 9 && r.state == Run::Finished);
     assert(r.splits.size() == 3 && r.splits[2].map == "farm" && r.splits[2].seg == 1 && r.splits[2].time == 5);

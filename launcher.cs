@@ -48,7 +48,7 @@ class LauncherForm : Form {
     static readonly string[] Labels = { "", "Speed ", "RTA ", "IGT ", "Map RTA ", "Map IGT ", "PB ", "Loads ", "Deaths ", "", "", "" };
     static readonly string[] Samples = { "X 1234.5  Y -678.9  Z 12.0", "320 u/s (max 455)", "1:23:45.67", "1:20:02.10", "4:05.33", "3:58.90", "4:01.00  -0:02.10", "12 (3:43.57)", "3", "Any%", "trainyard",
         "trainyard   4:01.20  -0:01.20   4:01.20\nfarm       12:30.00  +0:03.10  16:31.20\nchurch                -0:00.40  19:02.00" };
-    static readonly string[] Keys = { "toggle", "start_stop", "reset", "category", "save_pos", "teleport", "quick_save", "quick_load", "restart_cp", "menu" };
+    static readonly string[] Keys = { "toggle", "start_stop", "reset", "category", "save_pos", "teleport", "quick_save", "quick_load", "restart_cp", "menu", "new_run" };
     static readonly string[] KeyTitles = {
         L("Show/hide overlay", "Показать/скрыть оверлей"),
         L("Start/finish run", "Старт/финиш рана"),
@@ -59,7 +59,8 @@ class LauncherForm : Form {
         L("Quick save", "Быстрое сохранение"),
         L("Quick load", "Быстрая загрузка"),
         L("Restart checkpoint", "Перезапуск чекпоинта"),
-        L("In-game menu", "Меню в игре")
+        L("In-game menu", "Меню в игре"),
+        L("Start New Run (Wizard)", "Мастер нового рана (F2)")
     };
     static readonly Keys[] KeyDefaults = {
         System.Windows.Forms.Keys.F6,
@@ -71,7 +72,8 @@ class LauncherForm : Form {
         System.Windows.Forms.Keys.F5,
         System.Windows.Forms.Keys.F9,
         System.Windows.Forms.Keys.F11,
-        System.Windows.Forms.Keys.F1
+        System.Windows.Forms.Keys.F1,
+        System.Windows.Forms.Keys.F2
     };
     // Map file name (as the mod reads it), English and Russian display names.
     static readonly string[] Missions = {
@@ -87,6 +89,10 @@ class LauncherForm : Form {
         "mtw_off", "Officer's Apartment", "Квартира офицера", "mtw_ware", "Warehouse", "Склад" };
 
     static readonly string[] Anchors = { L("Top left", "Левый верх"), L("Top right", "Правый верх"), L("Bottom left", "Левый низ"), L("Bottom right", "Правый низ"), L("Center", "Центр") };
+    static readonly string[] CatKeys = { "any", "100", "all_bosses", "il", "cheat" };
+    static readonly string[] CatNames = { "Any%", "100%", "All Bosses", "IL", "Cheat%" };
+    static readonly string[] RulesetNames = { L("Restricted", "Рестрикт"), L("Unrestricted", "Анрестрикт") };
+    static readonly string[] DiffNames = { L("Casual (Easy)", "Лёгкая (Casual)"), L("Normal", "Нормальная"), L("Hard", "Высокая (Hard)"), L("Über", "Эксперт (Über)") };
 
     string dir = AppDomain.CurrentDomain.BaseDirectory;
     Widget[] widgets = new Widget[Ids.Length];
@@ -121,18 +127,28 @@ class LauncherForm : Form {
             widgets[i] = w;
         }
 
-        // Top bar: category, language, play, install.
+
+        // Top bar: category, ruleset, language, play, install.
         var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 46, Padding = new Padding(6) };
-        var cat = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 };
-        cat.Items.AddRange(new object[] { "Any%", "Cheat%" });
-        cat.SelectedIndex = Ini.Get("general", "category", "any") == "cheat" ? 1 : 0;
-        cat.SelectedIndexChanged += delegate { Ini.Set("general", "category", cat.SelectedIndex == 1 ? "cheat" : "any"); };
-        var lang = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 100 };
+        var cat = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 100 };
+        cat.Items.AddRange(CatNames);
+        string curCat = Ini.Get("general", "category", "any");
+        int catIdx = Array.IndexOf(CatKeys, curCat);
+        cat.SelectedIndex = catIdx >= 0 ? catIdx : 0;
+        cat.SelectedIndexChanged += delegate { Ini.Set("general", "category", CatKeys[cat.SelectedIndex]); };
+
+        var ruleset = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 };
+        ruleset.Items.AddRange(RulesetNames);
+        int curRuleset = Math.Max(0, Math.Min(1, Ini.GetI("general", "ruleset", 0)));
+        ruleset.SelectedIndex = curRuleset;
+        ruleset.SelectedIndexChanged += delegate { Ini.Set("general", "ruleset", ruleset.SelectedIndex); };
+
+        var lang = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 95 };
         lang.Items.AddRange(new object[] { "english", "russian", "french", "german", "italian", "spanish", "polish" });
         lang.SelectedItem = Ini.Get("launcher", "language", "english");
         if (lang.SelectedIndex < 0) lang.SelectedIndex = 0;
         lang.SelectedIndexChanged += delegate { Ini.Set("launcher", "language", lang.SelectedItem); };
-        var play = new Button { Text = L("▶ Play", "▶ Играть"), Width = 110, Height = 30, BackColor = Color.FromArgb(60, 140, 60), ForeColor = Color.White };
+        var play = new Button { Text = L("▶ Play", "▶ Играть"), Width = 105, Height = 30, BackColor = Color.FromArgb(60, 140, 60), ForeColor = Color.White };
         play.Click += delegate { Play((string)lang.SelectedItem); };
         var inst = new Button { Text = L("Install/update mod", "Установить/обновить мод"), AutoSize = true, Height = 30 };
         inst.Click += delegate { Install(); };
@@ -142,12 +158,15 @@ class LauncherForm : Form {
         resetPb.Click += delegate {
             if (MessageBox.Show(L("Delete all saved per-map PBs?", "Удалить все сохранённые PB по картам?"), Text, MessageBoxButtons.YesNo) == DialogResult.Yes) File.Delete(P("srmod_pb.ini"));
         };
-        var ui = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 90, Margin = new Padding(16, 3, 3, 3) };
+        var ui = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 85, Margin = new Padding(12, 3, 3, 3) };
         ui.Items.AddRange(new object[] { "English", "Русский" });
         ui.SelectedIndex = Ru ? 1 : 0;
         ui.SelectedIndexChanged += delegate { Ini.Set("launcher", "ui", ui.SelectedIndex == 1 ? "ru" : "en"); Application.Restart(); };
-        top.Controls.AddRange(new Control[] { new Label { Text = L("Category:", "Категория:"), AutoSize = true, Margin = new Padding(3, 8, 0, 0) }, cat,
-            new Label { Text = L("Game language:", "Язык:"), AutoSize = true, Margin = new Padding(8, 8, 0, 0) }, lang, play, inst, uninst, resetPb, ui });
+        top.Controls.AddRange(new Control[] {
+            new Label { Text = L("Category:", "Категория:"), AutoSize = true, Margin = new Padding(3, 8, 0, 0) }, cat,
+            new Label { Text = L("Rules:", "Правила:"), AutoSize = true, Margin = new Padding(6, 8, 0, 0) }, ruleset,
+            new Label { Text = L("Language:", "Язык:"), AutoSize = true, Margin = new Padding(6, 8, 0, 0) }, lang,
+            play, inst, uninst, resetPb, ui });
 
         status.Dock = DockStyle.Bottom; status.Height = 24; status.Padding = new Padding(6, 4, 0, 0);
 
@@ -403,6 +422,11 @@ class LauncherForm : Form {
         font.SelectedItem = Ini.Get("general", "font", "Consolas");
         font.SelectedIndexChanged += delegate { Ini.Set("general", "font", "\"" + font.SelectedItem + "\""); preview.Invalidate(); };
         AddRow(t, L("Font", "Шрифт"), font); font.Width = 220;
+        var diff = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
+        diff.Items.AddRange(DiffNames);
+        diff.SelectedIndex = Math.Max(0, Math.Min(3, Ini.GetI("general", "difficulty", 3)));
+        diff.SelectedIndexChanged += delegate { Ini.Set("general", "difficulty", diff.SelectedIndex); };
+        AddRow(t, L("Difficulty (g_skill)", "Сложность (g_skill)"), diff); diff.Width = 220;
         return page.With(t);
     }
 
@@ -476,7 +500,8 @@ class LauncherForm : Form {
     void Play(string lang) {
         if (Process.GetProcessesByName("Wolf2").Length > 0) { MessageBox.Show(L("The game is already running.", "Игра уже запущена."), Text); return; }
         if (!Install()) return;
-        Process.Start(new ProcessStartInfo(P("Wolf2.exe"), "+set com_allowconsole 1 +set com_SingleDeclFile 0 +set sys_lang \"" + lang + "\"") { WorkingDirectory = dir });
+        int diffIdx = Math.Max(0, Math.Min(3, Ini.GetI("general", "difficulty", 3)));
+        Process.Start(new ProcessStartInfo(P("Wolf2.exe"), "+set com_allowconsole 1 +set com_SingleDeclFile 0 +set g_skill " + diffIdx + " +set sys_lang \"" + lang + "\"") { WorkingDirectory = dir });
     }
 
     [STAThread]

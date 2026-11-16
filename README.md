@@ -4,21 +4,28 @@ In-game speedrun overlay, full in-game settings menu (Dear ImGui), and standalon
 
 ## Features
 
+- **BXT-Style New Run Setup Wizard (`F2`)**: Interactive run configuration wizard modeled after Bunnymod XT for Half-Life:
+  - **Category Selection**: Choose between **Any%**, **100%** (all 148 Gold, 88 Intel, 16 Tomes of Power, and upgrades), **All Bosses** (General Zetta, Queen Geist, Hans Grosse), **Individual Level (IL)**, or **Cheat%** (practice). Displays clear rules and timing criteria.
+  - **Ruleset Enforcement**:
+    - **Restricted (Competitive Standard)**: Quicksaves (`F5`) and Quickloads (`F9`) are **physically blocked** by the mod proxy at the window hook level. Cheats and teleports are completely disabled. FOV, head bobbing, language, and checkpoint reloads remain allowed.
+    - **Unrestricted**: All glitches, quicksaves, quickloads, geometry skips, and mission replay warps allowed.
+  - **Difficulty Selection**: Set game difficulty (`Casual`, `Normal`, `Hard`, or community-standard `Über` via `g_skill 0..3`).
+  - **Instant Run Start**: One click (`[ START RUN NOW ]`) applies the skill cvar, resets timers, and launches directly into the opening cutscene (`wolf_campaign_start_vo_<language>.bik`) and campaign.
+- **Warp Trick Timer Protection**: Speedrunners frequently use the "warp trick" (replaying a mission from the menu and aborting immediately to warp to its completion trigger, e.g., Train Station). While a run is active (`g_run.state == Run::Running`), **the timer is strictly protected**: visiting or reloading Train Station (`trainyard`) will **never** zero out your run.
 - **In-Game Settings Menu (`F1`)**: Built directly into the DirectX 9 renderer using Dear ImGui. Modify any setting live in-game without alt-tabbing:
   - **Game & Visuals**: Real-time FOV slider (60°–120°) with quick presets, View/Head Bobbing toggle (`g_noViewBob` to eliminate motion sickness), and game language selector (`sys_lang`: English, Russian, French, German, Italian, Spanish, Polish).
-  - **Quick Save / Load Binds**: Dedicated hotkeys for quick saving (`F5`), quick loading (`F9`), and restarting from checkpoint (`F11`).
+  - **Quick Save / Load Binds**: Dedicated hotkeys for quick saving (`F5`), quick loading (`F9`), and restarting from checkpoint (`F11`). In Restricted mode, quick save and load are cleanly disabled with an informative banner.
   - **HUD Widgets Editor**: Toggle any widget, adjust position (X/Y), size, anchor, labels, and per-element colors (values, labels, backgrounds, and split deltas).
   - **Keybinds Manager**: Rebind any hotkey directly with a single click.
-  - **Categories & Rules**: Any% vs Cheat%, campaign cutscene auto-start, IL practice auto-start, god mode lock, post-load commands.
-  - **Records & Splits**: View current PB runs, per-map records, and reset PB data.
-- **D3D9 Speedrun Overlay**: Drawn inside the Direct3D 9 frame, working seamlessly in exclusive fullscreen and video recordings.
+  - **Categories & Rules**: Any%, 100%, All Bosses, IL, Cheat%, ruleset selection, campaign cutscene auto-start, IL practice auto-start, god mode lock, post-load commands.
+  - **Records & Splits**: View current PB runs, per-map records for the active category and ruleset, and reset PB data.
+- **D3D9 Speedrun Overlay**: Drawn inside the Direct3D 9 frame, working seamlessly in exclusive fullscreen and video recordings. Category widget displays full status (e.g. `Any% (Restricted) | Über`).
 - **Accurate Timers**: Total RTA, total IGT, map RTA, and map IGT. IGT automatically pauses during loads, in-engine cutscenes, pre-rendered (Bink) videos, and the mission complete screen.
-- **Campaign Auto-Start**: The timer automatically resets and begins when the campaign intro video (`wolf_campaign_start_vo_english.bik`) starts. Visiting or reloading Train Station (`trainyard`) will **not** wipe your run.
-- **LiveSplit-Style Splits**: Per-map segment times, live deltas against your PB run (green = ahead, red = behind, gold = best segment), and split times.
+- **Campaign Auto-Start**: The timer automatically resets and begins when the campaign intro video (`wolf_campaign_start_vo_english.bik`) starts.
+- **LiveSplit-Style Splits**: Per-map segment times, live deltas against your PB run (green = ahead, red = behind, gold = best segment), and split times. Separate PBs maintained per category and ruleset (`any_restricted`, `any_unrestricted`, etc.).
 - **Player Metrics**: Real-time coordinates (X, Y, Z), speedometer (current and max per map), loads counter with total load duration, and death counter.
-- **Categories**: Any% and Cheat%. Cheat% locks god mode and automatically executes console commands after each load (`give all;giveAllPowerUpgrades;momoney`).
 - **Practice Tools**: Save player position and teleport back to saved coordinates. Teleporting marks the run as PRACTICE.
-- **Standalone Launcher**: Optional external GUI to install/uninstall the mod, launch the game, and pre-configure layout or settings.
+- **Standalone Launcher**: External GUI to install/uninstall the mod, launch the game, and pre-configure layout or settings.
 
 ## Install
 
@@ -34,15 +41,16 @@ Requirements: DirectX End-User Runtime (for `d3dx9_43.dll`) and .NET Framework 4
 | Key | Action |
 |-----|--------|
 | **F1** | **Open / close In-Game Settings Menu** |
-| **F5** | **Quick Save** (`contentManagerCommand save full`) |
-| **F9** | **Quick Load** (`contentManagerCommand loadLast`) |
+| **F2** | **Start New Run Wizard (BXT Setup: Category, Ruleset, Difficulty)** |
+| **F5** | **Quick Save** (`contentManagerCommand save full` — blocked in Restricted) |
+| **F9** | **Quick Load** (`contentManagerCommand loadLast` — blocked in Restricted) |
 | **F11** | **Restart Checkpoint** (`ScaleformDiedRestart`) |
 | **F6** | Show / hide overlay |
 | **F7** | Start / finish run |
 | **F8** | Reset timer |
-| **F10** | Switch category (Any% / Cheat%) |
+| **F10** | Cycle category (Any%, 100%, All Bosses, IL, Cheat%) |
 | **Num 7** | Save position (practice) |
-| **Num 9** | Teleport to saved position (practice) |
+| **Num 9** | Teleport to saved position (practice — blocked in Restricted) |
 
 All hotkeys can be rebound at any time via the in-game menu (`F1`) or in `SrmodLauncher.exe`.
 

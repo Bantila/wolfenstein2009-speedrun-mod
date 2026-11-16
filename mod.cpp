@@ -92,22 +92,73 @@ struct Widget {
 
 enum Key {
     K_TOGGLE, K_STARTSTOP, K_RESET, K_CATEGORY, K_SAVEPOS, K_TELEPORT,
-    K_QUICKSAVE, K_QUICKLOAD, K_RESTART_CP, K_MENU,
+    K_QUICKSAVE, K_QUICKLOAD, K_RESTART_CP, K_MENU, K_NEWRUN,
     K_COUNT
 };
 const char* kKeyNames[K_COUNT] = {
     "toggle", "start_stop", "reset", "category", "save_pos", "teleport",
-    "quick_save", "quick_load", "restart_cp", "menu"
+    "quick_save", "quick_load", "restart_cp", "menu", "new_run"
 };
 const int kKeyDefaults[K_COUNT] = {
     VK_F6, VK_F7, VK_F8, VK_F10, VK_NUMPAD7, VK_NUMPAD9,
-    VK_F5, VK_F9, VK_F11, VK_F1
+    VK_F5, VK_F9, VK_F11, VK_F1, VK_F2
 };
 const char* kKeyTitles[K_COUNT] = {
     "Show/hide overlay", "Start/finish run", "Reset timer", "Switch category",
     "Save position (practice)", "Teleport to position",
-    "Quick Save", "Quick Load", "Restart Checkpoint", "Open / Close In-Game Menu"
+    "Quick Save", "Quick Load", "Restart Checkpoint", "Open / Close In-Game Menu",
+    "Start New Run (Wizard)"
 };
+
+// Speedrun Categories (speedrun.com style)
+enum CategoryId {
+    CAT_ANY,
+    CAT_100,
+    CAT_ALL_BOSSES,
+    CAT_IL,
+    CAT_CHEAT,
+    CAT_COUNT
+};
+const char* kCategoryKeys[CAT_COUNT] = { "any", "100", "all_bosses", "il", "cheat" };
+const char* kCategoryNames[CAT_COUNT] = { "Any%", "100%", "All Bosses", "Individual Level (IL)", "Cheat% (Practice)" };
+const char* kCategorySummaries[CAT_COUNT] = {
+    "Complete the game as fast as possible from campaign start to Black Sun end.",
+    "Complete 100% of the game: all 148 Gold, 88 Intel, 16 Tomes of Power, and all weapon/veil upgrades.",
+    "Defeat all 3 major story bosses: General Viktor Zetta, Queen Geist, and Hans Grosse.",
+    "Individual level time attack for the selected mission.",
+    "Practice category with developer cheats, god mode, and position teleportation."
+};
+const char* kCategoryTimingRules[CAT_COUNT] = {
+    "Timing starts when wolf_campaign_start cutscene begins. Ends on final hit on Hans Grosse / dimension collapse.",
+    "Timing starts on wolf_campaign_start. Ends when final Black Sun boss falls with 100% journal stats.",
+    "Timing starts on wolf_campaign_start. Ends when Hans Grosse is defeated.",
+    "Timing starts upon spawning into the map. Ends upon mission complete.",
+    "Practice / unrestricted timing."
+};
+
+// Speedrun Rulesets
+enum RulesetId {
+    RULESET_RESTRICTED,    // 0: Competitive standard: Quicksaves/loads BLOCKED, no cheats, no warps
+    RULESET_UNRESTRICTED,  // 1: Glitched: Quicksaves/loads allowed, warp glitches allowed
+    RULESET_COUNT
+};
+const char* kRulesetKeys[RULESET_COUNT] = { "restricted", "unrestricted" };
+const char* kRulesetNames[RULESET_COUNT] = { "Restricted", "Unrestricted" };
+const char* kRulesetSummaries[RULESET_COUNT] = {
+    "Competitive standard: Quicksave (F5) and Quickload (F9) are STRICTLY FORBIDDEN and blocked by mod proxy. Cheats & teleports blocked. Allowed: FOV adjustment, View Bobbing toggle, Language, Checkpoint Reload.",
+    "Glitched runs: Quicksave and Quickload permitted. Mission replay warp glitch, geometry clipping, and out-of-bounds skips permitted."
+};
+
+// Difficulties (g_skill)
+enum DifficultyId {
+    DIFF_CASUAL,   // 0
+    DIFF_NORMAL,   // 1
+    DIFF_HARD,     // 2
+    DIFF_UBER,     // 3
+    DIFF_COUNT
+};
+const char* kDifficultyNames[DIFF_COUNT] = { "Casual (Easy)", "Normal (Medium)", "Hard", "Über (Competitive Standard)" };
+const char* kDifficultyShortNames[DIFF_COUNT] = { "Casual", "Normal", "Hard", "Über" };
 
 struct Settings {
     Widget w[W_COUNT];
@@ -121,6 +172,8 @@ struct Settings {
     bool headBob = true;
     std::string language = "english";
     std::string font = "Consolas", category = "any", startMap = "trainyard";
+    int ruleset = RULESET_RESTRICTED; // 0 = restricted, 1 = unrestricted
+    int difficulty = DIFF_UBER;       // 0..3 (default 3 = Über)
     std::string cheatCmds, teleportCmd;
 };
 
@@ -159,11 +212,12 @@ static std::vector<Split> g_pbSplits;  // splits of the best full run in current
 static volatile LONG g_binkOpen;  // open Bink videos (pre-rendered cutscenes)
 static std::string g_msg; static DWORD g_msgUntil;
 
-// In-Game Menu state
+// In-Game Menu & Wizard state
 static bool g_imguiInit = false;
 static HWND g_gameHwnd = nullptr;
 static WNDPROC g_origWndProc = nullptr;
 static bool g_menuOpen = false;
+static bool g_wizardOpen = false;
 static int g_rebindKeyIndex = -1;
 static int g_selectedWidget = 0;
 static bool g_confirmResetPb = false;
@@ -211,6 +265,10 @@ static Settings LoadSettings() {
     s.shadow = IniI("general", "shadow", 1) != 0;
     s.font = IniS("general", "font", "Consolas");
     s.category = IniS("general", "category", "any");
+    s.ruleset = IniI("general", "ruleset", RULESET_RESTRICTED);
+    if (s.ruleset < 0 || s.ruleset >= RULESET_COUNT) s.ruleset = RULESET_RESTRICTED;
+    s.difficulty = IniI("general", "difficulty", DIFF_UBER);
+    if (s.difficulty < 0 || s.difficulty >= DIFF_COUNT) s.difficulty = DIFF_UBER;
     s.startMap = IniS("general", "start_map", "trainyard");
     s.fov = IniI("game", "fov", 80);
     s.headBob = IniI("game", "head_bob", 1) != 0;
@@ -257,6 +315,8 @@ static void SaveSettings(const Settings& s) {
     std::string qfont = "\"" + s.font + "\"";
     WritePrivateProfileStringA("general", "font", qfont.c_str(), g_ini);
     WritePrivateProfileStringA("general", "category", s.category.c_str(), g_ini);
+    WritePrivateProfileStringA("general", "ruleset", std::to_string(s.ruleset).c_str(), g_ini);
+    WritePrivateProfileStringA("general", "difficulty", std::to_string(s.difficulty).c_str(), g_ini);
     WritePrivateProfileStringA("general", "start_map", s.startMap.c_str(), g_ini);
     WritePrivateProfileStringA("game", "fov", std::to_string(s.fov).c_str(), g_ini);
     WritePrivateProfileStringA("game", "head_bob", s.headBob ? "1" : "0", g_ini);
@@ -266,17 +326,56 @@ static void SaveSettings(const Settings& s) {
     WritePrivateProfileStringA("cheat", "teleport_cmd", s.teleportCmd.c_str(), g_ini);
 }
 
-static const char* CategoryName(const std::string& c) { return c == "cheat" ? "Cheat%" : "Any%"; }
+static std::string GetPbCategoryKey(const Settings& s) {
+    if (s.category == "cheat") return "cheat";
+    std::string r = s.ruleset == RULESET_RESTRICTED ? "restricted" : "unrestricted";
+    return s.category + "_" + r;
+}
 
-static double ReadPb(const std::string& cat, const std::string& map) {
-    std::string v = IniS(cat.c_str(), map.c_str(), "", g_pbIni);
+static std::string GetFullCategoryDisplay(const Settings& s) {
+    if (s.category == "cheat") {
+        return std::string("Cheat% | ") + kDifficultyShortNames[s.difficulty];
+    }
+    std::string catName = "Any%";
+    for (int i = 0; i < CAT_COUNT; i++) {
+        if (s.category == kCategoryKeys[i]) { catName = kCategoryNames[i]; break; }
+    }
+    if (s.category == "il") {
+        std::string mName = s.startMap;
+        for (int i = 0; i < kMissionCount; i++) {
+            if (s.startMap == kMissionIds[i]) { mName = kMissionNames[i]; break; }
+        }
+        return "IL: " + mName + " (" + kRulesetNames[s.ruleset] + ") | " + kDifficultyShortNames[s.difficulty];
+    }
+    return catName + " (" + kRulesetNames[s.ruleset] + ") | " + kDifficultyShortNames[s.difficulty];
+}
+
+static const char* CategoryName(const std::string& c) {
+    for (int i = 0; i < CAT_COUNT; i++) {
+        if (c == kCategoryKeys[i]) return kCategoryNames[i];
+    }
+    return "Any%";
+}
+
+static double ReadPb(const std::string& catKey, const std::string& map) {
+    std::string v = IniS(catKey.c_str(), map.c_str(), "", g_pbIni);
+    if (v.empty() && catKey.find('_') != std::string::npos) {
+        // Fallback to base category for legacy records
+        std::string baseCat = catKey.substr(0, catKey.find('_'));
+        v = IniS(baseCat.c_str(), map.c_str(), "", g_pbIni);
+    }
     return v.empty() ? -1 : atof(v.c_str());
 }
 
-static std::vector<Split> ReadPbSplits(const std::string& cat) {
-    std::string sec = "splits." + cat;
+static std::vector<Split> ReadPbSplits(const std::string& catKey) {
+    std::string sec = "splits." + catKey;
     std::vector<Split> v;
     int n = GetPrivateProfileIntA(sec.c_str(), "n", 0, g_pbIni);
+    if (n == 0 && catKey.find('_') != std::string::npos) {
+        std::string baseCat = catKey.substr(0, catKey.find('_'));
+        sec = "splits." + baseCat;
+        n = GetPrivateProfileIntA(sec.c_str(), "n", 0, g_pbIni);
+    }
     for (int i = 0; i < n; i++) {
         std::string k = std::to_string(i);
         double t = atof(IniS(sec.c_str(), ("time" + k).c_str(), "0", g_pbIni).c_str());
@@ -285,8 +384,8 @@ static std::vector<Split> ReadPbSplits(const std::string& cat) {
     return v;
 }
 
-static void WritePbSplits(const std::string& cat, const std::vector<Split>& v) {
-    std::string sec = "splits." + cat;
+static void WritePbSplits(const std::string& catKey, const std::vector<Split>& v) {
+    std::string sec = "splits." + catKey;
     WritePrivateProfileStringA(sec.c_str(), nullptr, nullptr, g_pbIni);
     WritePrivateProfileStringA(sec.c_str(), "n", std::to_string(v.size()).c_str(), g_pbIni);
     for (size_t i = 0; i < v.size(); i++) {
@@ -385,17 +484,53 @@ static void FinishRun() {
     bool clean = g_run.mapClean;
     std::string map = g_run.map; double mapIgt = g_run.mapIgt;
     g_run.Finish();
-    double pb = ReadPb(g_set.category, map);
+    std::string catKey = GetPbCategoryKey(g_set);
+    double pb = ReadPb(catKey, map);
     if (clean && (pb < 0 || mapIgt < pb)) {
         char v[32]; snprintf(v, sizeof v, "%.3f", mapIgt);
-        WritePrivateProfileStringA(g_set.category.c_str(), map.c_str(), v, g_pbIni);
+        WritePrivateProfileStringA(catKey.c_str(), map.c_str(), v, g_pbIni);
         g_run.splits.back().gold = true;
     }
     bool better = g_pbSplits.empty() || g_run.igt < g_pbSplits.back().time;
     if (!g_run.practice && better) {
-        WritePbSplits(g_set.category, g_run.splits);
+        WritePbSplits(catKey, g_run.splits);
         Message("New PB run: " + FormatTime(g_run.igt, 3, false));
-    } else Message("Run finished");
+    } else Message("Run finished: " + FormatTime(g_run.igt, 2, false));
+}
+
+static void StartNewRunFromWizard() {
+    g_run.Reset();
+    g_run.practice = false;
+    g_maxSpeed = 0;
+    std::string catKey = GetPbCategoryKey(g_set);
+    g_pb = ReadPb(catKey, g_set.startMap);
+    g_pbSplits = ReadPbSplits(catKey);
+
+    char buf[512];
+    if (g_set.category == "il") {
+        snprintf(buf, sizeof buf,
+            "set g_skill %d\n"
+            "map game/%s/%s\n",
+            g_set.difficulty, g_set.startMap.c_str(), g_set.startMap.c_str());
+        ExecCommandList(buf);
+        Message("IL Run Started: " + g_set.startMap);
+    } else {
+        snprintf(buf, sizeof buf,
+            "set g_skill %d\n"
+            "NewCampaignHasStarted\n"
+            "set g_postVideoCommand \"map game/trainyard/trainyard\"\n"
+            "PlayVideo videos/wolf_campaign_start_vo_%s\n",
+            g_set.difficulty, g_set.language.c_str());
+        ExecCommandList(buf);
+        Message("Speedrun Initialized: " + GetFullCategoryDisplay(g_set));
+    }
+
+    if (g_set.ruleset == RULESET_RESTRICTED) {
+        ExecCommand("unbind F5\nunbind F9\n");
+    }
+
+    Log("New Run Initialized: category=%s, difficulty=%d, ruleset=%d",
+        g_set.category.c_str(), g_set.difficulty, g_set.ruleset);
 }
 
 static const char* GetKeyDisplayName(int vk) {
@@ -468,7 +603,7 @@ static D3DCOLOR ImVec4ToD3D(const ImVec4& v) {
     return ((a & 0xFF) << 24) | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
 }
 
-// Window procedure hook for in-game menu input capture
+// Window procedure hook for in-game menu and wizard input capture
 static LRESULT CALLBACK hkWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (g_rebindKeyIndex >= 0) {
         if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) {
@@ -482,19 +617,39 @@ static LRESULT CALLBACK hkWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
         }
     }
 
-    if (msg == WM_KEYDOWN && (int)wParam == g_set.keys[K_MENU]) {
-        g_menuOpen = !g_menuOpen;
-        return 0;
+    if (msg == WM_KEYDOWN) {
+        if ((int)wParam == g_set.keys[K_MENU]) {
+            g_menuOpen = !g_menuOpen;
+            if (g_menuOpen) g_wizardOpen = false;
+            return 0;
+        }
+        if ((int)wParam == g_set.keys[K_NEWRUN]) {
+            g_wizardOpen = !g_wizardOpen;
+            if (g_wizardOpen) g_menuOpen = false;
+            return 0;
+        }
     }
 
-    if (g_menuOpen) {
+    // RESTRICTED MODE ENFORCEMENT:
+    // If the runner is in Restricted ruleset, physically block Quicksave and Quickload key events
+    // from ever reaching Wolf2.exe engine!
+    if (g_set.ruleset == RULESET_RESTRICTED && (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)) {
+        if ((int)wParam == g_set.keys[K_QUICKSAVE] || (int)wParam == g_set.keys[K_QUICKLOAD] ||
+            wParam == VK_F5 || wParam == VK_F9) {
+            Message("[RESTRICTED] Quicksaves & Quickloads are FORBIDDEN!");
+            return 0; // Drop keystroke completely
+        }
+    }
+
+    if (g_menuOpen || g_wizardOpen) {
         if (msg == WM_KEYDOWN && wParam == VK_ESCAPE) {
             g_menuOpen = false;
+            g_wizardOpen = false;
             return 0;
         }
         if (g_imguiInit && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam))
             return 1;
-        // Suppress gameplay input when menu is active
+        // Suppress gameplay input when menu or wizard is active
         if ((msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) ||
             (msg >= WM_KEYFIRST && msg <= WM_KEYLAST)) {
             return 0;
@@ -528,7 +683,11 @@ static void Poll() {
                 iniTime = fa.ftLastWriteTime;
                 Settings s = LoadSettings();
                 std::lock_guard<std::mutex> lk(g_mx);
-                if (s.category != g_set.category) { g_pb = ReadPb(s.category, g_run.map); g_pbSplits = ReadPbSplits(s.category); }
+                if (s.category != g_set.category || s.ruleset != g_set.ruleset || s.difficulty != g_set.difficulty) {
+                    std::string catKey = GetPbCategoryKey(s);
+                    g_pb = ReadPb(catKey, g_run.map);
+                    g_pbSplits = ReadPbSplits(catKey);
+                }
                 g_set = s; g_fontsDirty = true;
             }
         }
@@ -536,7 +695,7 @@ static void Poll() {
         std::string cmds;
         {
             std::lock_guard<std::mutex> lk(g_mx);
-            bool cheat = g_set.category == "cheat";
+            bool cheat = (g_set.category == "cheat" && g_set.ruleset != RULESET_RESTRICTED);
             Snapshot s; ReadGame(&s, cheat && g_set.cheatGod);
 
             g_run.SetLoading(s.loading);
@@ -553,24 +712,25 @@ static void Poll() {
             bool menu = !strcmp(s.map, "menu") && !g_run.map.empty();
             if (!s.loading && s.map[0] && !menu && g_run.map != s.map) {
                 std::string done; double t;
+                std::string catKey = GetPbCategoryKey(g_set);
                 if (g_run.MapLoaded(s.map, &done, &t)) {
-                    double pb = ReadPb(g_set.category, done);
+                    double pb = ReadPb(catKey, done);
                     if (pb < 0 || t < pb) {
                         char v[32]; snprintf(v, sizeof v, "%.3f", t);
-                        WritePrivateProfileStringA(g_set.category.c_str(), done.c_str(), v, g_pbIni);
+                        WritePrivateProfileStringA(catKey.c_str(), done.c_str(), v, g_pbIni);
                         Message("New PB on " + done + ": " + FormatTime(t, 3, false));
                         if (!g_run.splits.empty() && g_run.splits.back().map == done) g_run.splits.back().gold = true;
                     }
                 }
                 // Auto-start on entering start_map (only if explicitly enabled for IL practice).
-                // Disabled by default so entering Train Station / trainyard will NOT reset the campaign run.
-                if (g_set.autoStartMap && !g_set.startMap.empty() &&
+                // WARP PROTECTION: If a run is ALREADY RUNNING, map changes NEVER restart or reset the run!
+                if (g_set.autoStartMap && g_run.state != Run::Running && !g_set.startMap.empty() &&
                     _stricmp(g_run.map.c_str(), g_set.startMap.c_str()) == 0) {
                     g_run.Start(); g_run.mapClean = true;
-                    g_pbSplits = ReadPbSplits(g_set.category);
-                    Message("Run started (map load)");
+                    g_pbSplits = ReadPbSplits(catKey);
+                    Message("Run started (map load: " + g_set.startMap + ")");
                 }
-                g_pb = ReadPb(g_set.category, g_run.map);
+                g_pb = ReadPb(catKey, g_run.map);
                 g_maxSpeed = 0;
                 cheatsPending = true;
 
@@ -593,9 +753,9 @@ static void Poll() {
                 }
             }
 
-            if (GameFocused() && !g_menuOpen) {
+            if (GameFocused() && !g_menuOpen && !g_wizardOpen) {
                 for (int k = 0; k < K_COUNT; k++) {
-                    if (k == K_MENU) continue; // Handled by hkWndProc
+                    if (k == K_MENU || k == K_NEWRUN) continue; // Handled by hkWndProc
                     bool down = (GetAsyncKeyState(g_set.keys[k]) & 0x8000) != 0;
                     bool pressed = down && !keyDown[k];
                     keyDown[k] = down;
@@ -604,35 +764,54 @@ static void Poll() {
                     case K_TOGGLE: g_visible = !g_visible; break;
                     case K_STARTSTOP:
                         if (g_run.state == Run::Running) FinishRun();
-                        else { g_run.Start(); g_pbSplits = ReadPbSplits(g_set.category); Message("Run started"); }
+                        else {
+                            g_run.Start();
+                            g_pbSplits = ReadPbSplits(GetPbCategoryKey(g_set));
+                            Message("Run started (" + GetFullCategoryDisplay(g_set) + ")");
+                        }
                         break;
                     case K_RESET: g_run.Reset(); g_maxSpeed = 0; Message("Reset"); break;
                     case K_CATEGORY: {
-                        std::string c = g_set.category == "cheat" ? "any" : "cheat";
-                        g_set.category = c;
+                        int curIdx = 0;
+                        for (int i = 0; i < CAT_COUNT; i++) {
+                            if (g_set.category == kCategoryKeys[i]) { curIdx = i; break; }
+                        }
+                        g_set.category = kCategoryKeys[(curIdx + 1) % CAT_COUNT];
                         SaveSettings(g_set);
-                        g_pb = ReadPb(c, g_run.map); g_pbSplits = ReadPbSplits(c);
-                        if (c == "cheat") cheatsPending = true;
-                        Message(std::string("Category: ") + CategoryName(c));
+                        std::string catKey = GetPbCategoryKey(g_set);
+                        g_pb = ReadPb(catKey, g_run.map);
+                        g_pbSplits = ReadPbSplits(catKey);
+                        if (g_set.category == "cheat") cheatsPending = true;
+                        Message("Category: " + GetFullCategoryDisplay(g_set));
                         break;
                     }
                     case K_SAVEPOS:
                         if (s.player) { memcpy(savedPos, s.pos, sizeof savedPos); haveSaved = true; Message("Position saved"); }
                         break;
                     case K_TELEPORT:
-                        if (haveSaved && s.player) {
+                        if (g_set.ruleset == RULESET_RESTRICTED) {
+                            Message("[RESTRICTED] Teleport is FORBIDDEN!");
+                        } else if (haveSaved && s.player) {
                             char b[256];
                             snprintf(b, sizeof b, g_set.teleportCmd.c_str(), savedPos[0], savedPos[1], savedPos[2]);
                             cmds += b; cmds += "\n"; g_run.Teleported(); Message("Teleport (practice)");
                         }
                         break;
                     case K_QUICKSAVE:
-                        cmds += "contentManagerCommand save full\n";
-                        Message("Quick Save");
+                        if (g_set.ruleset == RULESET_RESTRICTED) {
+                            Message("[RESTRICTED] Quicksave is FORBIDDEN!");
+                        } else {
+                            cmds += "contentManagerCommand save full\n";
+                            Message("Quick Save");
+                        }
                         break;
                     case K_QUICKLOAD:
-                        cmds += "contentManagerCommand loadLast\n";
-                        Message("Quick Load");
+                        if (g_set.ruleset == RULESET_RESTRICTED) {
+                            Message("[RESTRICTED] Quick Load is FORBIDDEN!");
+                        } else {
+                            cmds += "contentManagerCommand loadLast\n";
+                            Message("Quick Load");
+                        }
                         break;
                     case K_RESTART_CP:
                         cmds += "ScaleformDiedRestart\n";
@@ -679,7 +858,7 @@ static std::string WidgetText(int id, const Settings& st) {
         return T(g_pb) + "  " + FormatDelta(g_run.mapIgt - g_pb, st.decimals);
     case W_LOADS: snprintf(b, sizeof b, "%d (", g_run.loads); return b + T(g_run.loadTime) + ")";
     case W_DEATHS: return std::to_string(g_run.deaths);
-    case W_CATEGORY: return std::string(CategoryName(st.category)) + (g_run.practice ? "  PRACTICE" : "");
+    case W_CATEGORY: return GetFullCategoryDisplay(st) + (g_run.practice ? "  [PRACTICE]" : "");
     case W_MAP: return g_run.map;
     }
     return "";
@@ -786,6 +965,127 @@ static void DrawSplits(IDirect3DDevice9* dev, const Settings& st, const Widget& 
     }
 }
 
+// BXT-Style New Run Setup Wizard
+static void DrawNewRunWizard(IDirect3DDevice9* dev) {
+    ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowSize(ImVec2(780, 560), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f - 390.0f, io.DisplaySize.y * 0.5f - 280.0f), ImGuiCond_FirstUseEver);
+
+    if (ImGui::Begin("Wolfenstein (2009) Speedrun Setup - BXT Wizard", &g_wizardOpen, ImGuiWindowFlags_NoCollapse)) {
+        ImGui::TextColored(ImVec4(1.0f, 0.84f, 0.0f, 1.0f), "=== NEW SPEEDRUN CAMPAIGN WIZARD ===");
+        ImGui::TextDisabled("Select category, ruleset and difficulty before starting a fresh run.");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // STEP 1: CATEGORY SELECTION
+        ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "STEP 1: Speedrun Category (Категория)");
+        int currentCatIdx = 0;
+        for (int i = 0; i < CAT_COUNT; i++) {
+            if (g_set.category == kCategoryKeys[i]) { currentCatIdx = i; break; }
+        }
+        for (int i = 0; i < CAT_COUNT; i++) {
+            if (ImGui::RadioButton(kCategoryNames[i], currentCatIdx == i)) {
+                currentCatIdx = i;
+                g_set.category = kCategoryKeys[i];
+                SaveSettings(g_set);
+                std::string catKey = GetPbCategoryKey(g_set);
+                g_pb = ReadPb(catKey, g_run.map);
+                g_pbSplits = ReadPbSplits(catKey);
+            }
+            if (i < CAT_COUNT - 1) ImGui::SameLine();
+        }
+
+        // Category summary box
+        ImGui::BeginChild("CategoryDesc", ImVec2(0, 68), true);
+        ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.9f, 1.0f), "Goal: %s", kCategorySummaries[currentCatIdx]);
+        ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "Timing: %s", kCategoryTimingRules[currentCatIdx]);
+        ImGui::EndChild();
+
+        if (g_set.category == "il") {
+            int selMission = 0;
+            for (int i = 0; i < kMissionCount; i++) {
+                if (g_set.startMap == kMissionIds[i]) { selMission = i; break; }
+            }
+            if (ImGui::Combo("Select Mission for IL", &selMission, kMissionNames, kMissionCount)) {
+                g_set.startMap = kMissionIds[selMission]; SaveSettings(g_set);
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // STEP 2: RULESET SELECTION
+        ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "STEP 2: Ruleset (Рестрикт / Без ограничений)");
+        if (ImGui::RadioButton("Restricted (No Quicksave / Glitchless)", g_set.ruleset == RULESET_RESTRICTED)) {
+            g_set.ruleset = RULESET_RESTRICTED; SaveSettings(g_set);
+            std::string catKey = GetPbCategoryKey(g_set);
+            g_pb = ReadPb(catKey, g_run.map);
+            g_pbSplits = ReadPbSplits(catKey);
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Unrestricted (All Skips & Quicksaves Allowed)", g_set.ruleset == RULESET_UNRESTRICTED)) {
+            g_set.ruleset = RULESET_UNRESTRICTED; SaveSettings(g_set);
+            std::string catKey = GetPbCategoryKey(g_set);
+            g_pb = ReadPb(catKey, g_run.map);
+            g_pbSplits = ReadPbSplits(catKey);
+        }
+
+        // Ruleset enforcement banner
+        ImGui::BeginChild("RulesetDesc", ImVec2(0, 65), true);
+        if (g_set.ruleset == RULESET_RESTRICTED) {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "[!] RESTRICTED ENFORCEMENT ACTIVE:");
+            ImGui::TextWrapped("Quicksaves (F5) and Quickloads (F9) are BLOCKED by the mod proxy.");
+            ImGui::TextDisabled("Warps and developer cheats are prohibited. FOV, head bobbing, and checkpoint reloads are permitted.");
+        } else {
+            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "[*] UNRESTRICTED RULES ACTIVE:");
+            ImGui::TextWrapped("Quicksaves (F5) & Quickloads (F9) are allowed. Mission replay warp glitch, geometry clips and out-of-bounds skips permitted.");
+        }
+        ImGui::EndChild();
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // STEP 3: DIFFICULTY SELECTION
+        ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "STEP 3: Difficulty (Сложность g_skill)");
+        for (int i = 0; i < DIFF_COUNT; i++) {
+            if (ImGui::RadioButton(kDifficultyNames[i], g_set.difficulty == i)) {
+                g_set.difficulty = i; SaveSettings(g_set);
+            }
+            if (i < DIFF_COUNT - 1) ImGui::SameLine();
+        }
+        ImGui::TextDisabled("Competitive community standard for Any%% runs is Über difficulty (g_skill 3).");
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // LAUNCH BUTTONS
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.2f, 1.0f), "Summary: %s", GetFullCategoryDisplay(g_set).c_str());
+        ImGui::Spacing();
+
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.65f, 0.25f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.75f, 0.30f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.10f, 0.50f, 0.20f, 1.0f));
+        if (ImGui::Button("START RUN NOW (Launch Campaign & Cutscene)", ImVec2(380, 36))) {
+            StartNewRunFromWizard();
+            g_wizardOpen = false;
+        }
+        ImGui::PopStyleColor(3);
+
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel (Esc)", ImVec2(120, 36))) {
+            g_wizardOpen = false;
+        }
+
+        ImGui::SameLine();
+        ImGui::TextDisabled("Hotkey: [F2] opens this wizard anytime");
+    }
+    ImGui::End();
+}
+
 // In-Game Configuration Menu (ImGui)
 static void DrawInGameMenu(IDirect3DDevice9* dev) {
     ImGuiIO& io = ImGui::GetIO();
@@ -857,6 +1157,10 @@ static void DrawInGameMenu(IDirect3DDevice9* dev) {
                 ImGui::Spacing();
 
                 ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Quick Actions");
+                if (g_set.ruleset == RULESET_RESTRICTED) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "[RESTRICTED MODE: Quick Save & Quick Load are BLOCKED]");
+                    ImGui::BeginDisabled();
+                }
                 if (ImGui::Button("Quick Save (F5)", ImVec2(140, 26))) {
                     ExecCommand("contentManagerCommand save full\n");
                     Message("Quick Save");
@@ -865,6 +1169,9 @@ static void DrawInGameMenu(IDirect3DDevice9* dev) {
                 if (ImGui::Button("Quick Load (F9)", ImVec2(140, 26))) {
                     ExecCommand("contentManagerCommand loadLast\n");
                     Message("Quick Load");
+                }
+                if (g_set.ruleset == RULESET_RESTRICTED) {
+                    ImGui::EndDisabled();
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Restart Checkpoint (F11)", ImVec2(190, 26))) {
@@ -983,25 +1290,81 @@ static void DrawInGameMenu(IDirect3DDevice9* dev) {
             // TAB 4: Categories & Rules
             if (ImGui::BeginTabItem("Categories & Rules")) {
                 ImGui::Spacing();
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.60f, 0.25f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.70f, 0.30f, 1.0f));
+                if (ImGui::Button("Open Start New Run Wizard (F2)", ImVec2(280, 30))) {
+                    g_wizardOpen = true;
+                    g_menuOpen = false;
+                }
+                ImGui::PopStyleColor(2);
+                ImGui::SameLine();
+                ImGui::TextDisabled("(Interactive category, ruleset & difficulty setup)");
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+
                 ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Speedrun Category");
-                if (ImGui::RadioButton("Any% (Standard rules)", g_set.category == "any")) {
-                    g_set.category = "any"; SaveSettings(g_set);
-                    g_pb = ReadPb(g_set.category, g_run.map); g_pbSplits = ReadPbSplits(g_set.category);
+                int currentCatIdx = 0;
+                for (int i = 0; i < CAT_COUNT; i++) {
+                    if (g_set.category == kCategoryKeys[i]) { currentCatIdx = i; break; }
+                }
+                for (int i = 0; i < CAT_COUNT; i++) {
+                    if (ImGui::RadioButton(kCategoryNames[i], currentCatIdx == i)) {
+                        currentCatIdx = i;
+                        g_set.category = kCategoryKeys[i];
+                        SaveSettings(g_set);
+                        std::string catKey = GetPbCategoryKey(g_set);
+                        g_pb = ReadPb(catKey, g_run.map);
+                        g_pbSplits = ReadPbSplits(catKey);
+                    }
+                    if (i < CAT_COUNT - 1) ImGui::SameLine();
+                }
+                ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.9f, 1.0f), "Goal: %s", kCategorySummaries[currentCatIdx]);
+                ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "Timing: %s", kCategoryTimingRules[currentCatIdx]);
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Ruleset Enforcement");
+                if (ImGui::RadioButton("Restricted (No Quicksave / Glitchless)", g_set.ruleset == RULESET_RESTRICTED)) {
+                    g_set.ruleset = RULESET_RESTRICTED; SaveSettings(g_set);
+                    std::string catKey = GetPbCategoryKey(g_set);
+                    g_pb = ReadPb(catKey, g_run.map); g_pbSplits = ReadPbSplits(catKey);
                 }
                 ImGui::SameLine();
-                if (ImGui::RadioButton("Cheat% (Practice / Cheats allowed)", g_set.category == "cheat")) {
-                    g_set.category = "cheat"; SaveSettings(g_set);
-                    g_pb = ReadPb(g_set.category, g_run.map); g_pbSplits = ReadPbSplits(g_set.category);
+                if (ImGui::RadioButton("Unrestricted (All Skips & Quicksaves Allowed)", g_set.ruleset == RULESET_UNRESTRICTED)) {
+                    g_set.ruleset = RULESET_UNRESTRICTED; SaveSettings(g_set);
+                    std::string catKey = GetPbCategoryKey(g_set);
+                    g_pb = ReadPb(catKey, g_run.map); g_pbSplits = ReadPbSplits(catKey);
+                }
+                if (g_set.ruleset == RULESET_RESTRICTED) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "[!] RESTRICTED: Quicksaves & Quickloads are BLOCKED. Cheats/warps forbidden.");
+                } else {
+                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "[*] UNRESTRICTED: Quicksaves, quickloads, mission replay warps and skips allowed.");
                 }
 
                 ImGui::Spacing();
                 ImGui::Separator();
                 ImGui::Spacing();
 
-                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Timer Reset Triggers");
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Game Difficulty (g_skill)");
+                for (int i = 0; i < DIFF_COUNT; i++) {
+                    if (ImGui::RadioButton(kDifficultyNames[i], g_set.difficulty == i)) {
+                        g_set.difficulty = i; SaveSettings(g_set);
+                    }
+                    if (i < DIFF_COUNT - 1) ImGui::SameLine();
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Timer Reset Triggers & Warp Protection");
                 if (ImGui::Checkbox("Auto-start & reset on campaign cutscene (wolf_campaign_start_vo_english.bik)", &g_set.autoStartCutscene))
                     SaveSettings(g_set);
-                ImGui::TextDisabled("Recommended: resets the run when the campaign intro video begins. IGT pauses during the cutscene.");
+                ImGui::TextDisabled("Resets run when campaign intro cutscene starts. IGT pauses during cutscenes.");
 
                 if (ImGui::Checkbox("Auto-start & reset on map load (Individual Level IL runs only)", &g_set.autoStartMap))
                     SaveSettings(g_set);
@@ -1013,16 +1376,15 @@ static void DrawInGameMenu(IDirect3DDevice9* dev) {
                     if (ImGui::Combo("Start Mission", &selMission, kMissionNames, kMissionCount)) {
                         g_set.startMap = kMissionIds[selMission]; SaveSettings(g_set);
                     }
-                } else {
-                    ImGui::TextDisabled("Entering Train Station (trainyard) will NOT reset your run.");
                 }
+                ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "WARP PROTECTION: Mid-run mission replays/warps will NEVER reset an active run.");
 
                 ImGui::Spacing();
                 ImGui::Separator();
                 ImGui::Spacing();
 
                 ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Cheat% Configuration");
-                if (ImGui::Checkbox("Lock God Mode", &g_set.cheatGod)) SaveSettings(g_set);
+                if (ImGui::Checkbox("Lock God Mode (Cheat% only)", &g_set.cheatGod)) SaveSettings(g_set);
 
                 char cmdBuf[512]; snprintf(cmdBuf, sizeof cmdBuf, "%s", g_set.cheatCmds.c_str());
                 if (ImGui::InputText("Commands on Map Load", cmdBuf, sizeof cmdBuf)) {
@@ -1039,9 +1401,10 @@ static void DrawInGameMenu(IDirect3DDevice9* dev) {
             // TAB 5: Records & Splits
             if (ImGui::BeginTabItem("Records & Splits")) {
                 ImGui::Spacing();
-                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Best Run Splits (%s)", CategoryName(g_set.category));
+                std::string catKey = GetPbCategoryKey(g_set);
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Best Run Splits - %s", GetFullCategoryDisplay(g_set).c_str());
                 if (g_pbSplits.empty()) {
-                    ImGui::TextDisabled("No completed run saved in srmod_pb.ini yet.");
+                    ImGui::TextDisabled("No completed run saved in srmod_pb.ini for this category/ruleset yet.");
                 } else {
                     ImGui::BeginChild("SplitsList", ImVec2(0, 220), true);
                     ImGui::Columns(3, "PbCols");
@@ -1068,8 +1431,9 @@ static void DrawInGameMenu(IDirect3DDevice9* dev) {
                     ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Are you sure you want to erase all PBs in this category?");
                     ImGui::SameLine();
                     if (ImGui::Button("YES, ERASE")) {
-                        WritePrivateProfileStringA(g_set.category.c_str(), nullptr, nullptr, g_pbIni);
-                        std::string sec = "splits." + g_set.category;
+                        std::string catKey = GetPbCategoryKey(g_set);
+                        WritePrivateProfileStringA(catKey.c_str(), nullptr, nullptr, g_pbIni);
+                        std::string sec = "splits." + catKey;
                         WritePrivateProfileStringA(sec.c_str(), nullptr, nullptr, g_pbIni);
                         g_pb = -1; g_pbSplits.clear();
                         g_confirmResetPb = false;
@@ -1164,17 +1528,18 @@ static void DrawOverlay(IDirect3DDevice9* dev) {
             }
             if (GetTickCount() < g_msgUntil)
                 DrawLine(dev, st.font, 30, true, "", 0, g_msg, 0xFFFFD040, 0x90000000, 0.5f, 0.2f, 4, W, H);
-            if (!g_menuOpen)
-                DrawLine(dev, st.font, 14, false, "", 0, "[F1] Speedrun Settings", 0x80FFFFFF, 0x40000000, 0.005f, 0.995f, 2, W, H);
+            if (!g_menuOpen && !g_wizardOpen)
+                DrawLine(dev, st.font, 14, false, "", 0, "[F1] Settings  |  [F2] Start Run Wizard", 0x80FFFFFF, 0x40000000, 0.005f, 0.995f, 2, W, H);
         }
 
-        // Draw In-Game Menu
+        // Draw In-Game Menu and Wizard
         if (g_imguiInit) {
             ImGui_ImplDX9_NewFrame();
             ImGui_ImplWin32_NewFrame();
             ImGui::NewFrame();
-            ImGui::GetIO().MouseDrawCursor = g_menuOpen;
+            ImGui::GetIO().MouseDrawCursor = (g_menuOpen || g_wizardOpen);
             if (g_menuOpen) DrawInGameMenu(dev);
+            if (g_wizardOpen) DrawNewRunWizard(dev);
             ImGui::EndFrame();
             ImGui::Render();
             ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
@@ -1272,7 +1637,7 @@ static DWORD WINAPI MainThread(LPVOID) {
     if (!g_createFont) Log("d3dx9_43.dll / D3DXCreateFontA not found: install DirectX End-User Runtime");
 
     g_set = LoadSettings();
-    g_pbSplits = ReadPbSplits(g_set.category);
+    g_pbSplits = ReadPbSplits(GetPbCategoryKey(g_set));
     g_session = FindSession();
     Log("session: %p", g_session);
 
@@ -1305,11 +1670,17 @@ extern "C" void* __stdcall SrBinkOpen(const char* file, unsigned flags) {
         for (char& c : fnLower) c = (char)tolower((unsigned char)c);
         if (fnLower.find("wolf_campaign_start") != std::string::npos) {
             std::lock_guard<std::mutex> lk(g_mx);
-            if (g_set.autoStartCutscene) {
+            // WARP PROTECTION:
+            // If the runner is currently in an active run (state == Running, player exists, map != menu),
+            // a warp trick or mid-run cutscene MUST NEVER RESET the timer!
+            bool isMidRun = (g_run.state == Run::Running && g_havePlayer && g_run.map != "menu");
+            if (isMidRun) {
+                Log("WARP PROTECTION: suppressed cutscene timer reset during active run (map=%s)", g_run.map.c_str());
+            } else if (g_set.autoStartCutscene) {
                 g_run.Start();
                 g_run.mapClean = true;
-                g_pbSplits = ReadPbSplits(g_set.category);
-                Message("Run started (campaign)");
+                g_pbSplits = ReadPbSplits(GetPbCategoryKey(g_set));
+                Message("Run started (" + GetFullCategoryDisplay(g_set) + ")");
                 Log("Campaign start cutscene opened: %s -> timer reset and started", file);
             }
         }
