@@ -89,10 +89,10 @@ class LauncherForm : Form {
         "mtw_off", "Officer's Apartment", "Квартира офицера", "mtw_ware", "Warehouse", "Склад" };
 
     static readonly string[] Anchors = { L("Top left", "Левый верх"), L("Top right", "Правый верх"), L("Bottom left", "Левый низ"), L("Bottom right", "Правый низ"), L("Center", "Центр") };
-    static readonly string[] CatKeys = { "any", "100", "all_bosses", "il", "cheat" };
-    static readonly string[] CatNames = { "Any%", "100%", "All Bosses", "IL", "Cheat%" };
+    static readonly string[] CatKeys = { "any", "all_missions", "100", "segmented", "il", "cheat" };
+    static readonly string[] CatNames = { "Any%", "All Missions", "100%", "Segmented", "IL", "Cheat%" };
     static readonly string[] RulesetNames = { L("Restricted", "Рестрикт"), L("Unrestricted", "Анрестрикт") };
-    static readonly string[] DiffNames = { L("Casual (Easy)", "Лёгкая (Casual)"), L("Normal", "Нормальная"), L("Hard", "Высокая (Hard)"), L("Über", "Эксперт (Über)") };
+    static readonly string[] DiffNames = { L("Easy", "Лёгкая (Easy)"), L("Normal", "Нормальная (Normal)"), L("Hard", "Высокая (Hard)"), L("Über", "Эксперт (Über)") };
 
     string dir = AppDomain.CurrentDomain.BaseDirectory;
     Widget[] widgets = new Widget[Ids.Length];

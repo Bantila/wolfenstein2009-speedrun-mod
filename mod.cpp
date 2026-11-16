@@ -110,55 +110,58 @@ const char* kKeyTitles[K_COUNT] = {
     "Start New Run (Wizard)"
 };
 
-// Speedrun Categories (speedrun.com style)
+// Speedrun Categories (speedrun.com exact categories)
 enum CategoryId {
     CAT_ANY,
+    CAT_ALL_MISSIONS,
     CAT_100,
-    CAT_ALL_BOSSES,
+    CAT_SEGMENTED,
     CAT_IL,
     CAT_CHEAT,
     CAT_COUNT
 };
-const char* kCategoryKeys[CAT_COUNT] = { "any", "100", "all_bosses", "il", "cheat" };
-const char* kCategoryNames[CAT_COUNT] = { "Any%", "100%", "All Bosses", "Individual Level (IL)", "Cheat% (Practice)" };
+const char* kCategoryKeys[CAT_COUNT] = { "any", "all_missions", "100", "segmented", "il", "cheat" };
+const char* kCategoryNames[CAT_COUNT] = { "Any%", "All Missions", "100%", "Segmented", "Individual Level (IL)", "Cheat% (Practice)" };
 const char* kCategorySummaries[CAT_COUNT] = {
-    "Complete the game as fast as possible from campaign start to Black Sun end.",
-    "Complete 100% of the game: all 148 Gold, 88 Intel, 16 Tomes of Power, and all weapon/veil upgrades.",
-    "Defeat all 3 major story bosses: General Viktor Zetta, Queen Geist, and Hans Grosse.",
+    "Complete the game as fast as possible from campaign start to the mission complete dossier at Black Sun end.",
+    "Complete all 18 story and side missions (Train Station, Dig Site, Church, Farm, Caverns, Hospital, Cannery, Castle, Castle Top, Airfields, Zeppelin, Black Sun, Warehouse, Officer's House, SS HQ, Paranormal Base, Radio Tower).",
+    "Complete all missions, finding all 148 Golds, all 88 Intelligence, and all 16 Tomes of Power.",
+    "Multi-segment speedrun using saves and reloads to achieve the best segmented run.",
     "Individual level time attack for the selected mission.",
     "Practice category with developer cheats, god mode, and position teleportation."
 };
 const char* kCategoryTimingRules[CAT_COUNT] = {
-    "Timing starts when wolf_campaign_start cutscene begins. Ends on final hit on Hans Grosse / dimension collapse.",
-    "Timing starts on wolf_campaign_start. Ends when final Black Sun boss falls with 100% journal stats.",
-    "Timing starts on wolf_campaign_start. Ends when Hans Grosse is defeated.",
-    "Timing starts upon spawning into the map. Ends upon mission complete.",
+    "Timing starts on starting a new game (campaign cutscene) and ends when the 'mission complete' dossier appears on screen at the end of Black Sun.",
+    "Timing starts on campaign cutscene and ends upon completing all 18 story and side missions.",
+    "Timing starts on campaign cutscene and ends on final Black Sun dossier with 100% collectibles in journal.",
+    "Segmented timing across saves and level segments.",
+    "Timing begins on first frame of player gaining control of BJ, and ends on last frame of level gameplay (mission complete screen).",
     "Practice / unrestricted timing."
 };
 
-// Speedrun Rulesets
+// Speedrun Rulesets (speedrun.com 'Edits in config' variable)
 enum RulesetId {
-    RULESET_RESTRICTED,    // 0: Competitive standard: Quicksaves/loads BLOCKED, no cheats, no warps
-    RULESET_UNRESTRICTED,  // 1: Glitched: Quicksaves/loads allowed, warp glitches allowed
+    RULESET_RESTRICTED,    // 0: speedrun.com Restricted: Quicksaves/loads BLOCKED, no cheats, warps allowed
+    RULESET_UNRESTRICTED,  // 1: speedrun.com Unrestricted: Quicksaves/loads allowed, warp glitches allowed
     RULESET_COUNT
 };
 const char* kRulesetKeys[RULESET_COUNT] = { "restricted", "unrestricted" };
 const char* kRulesetNames[RULESET_COUNT] = { "Restricted", "Unrestricted" };
 const char* kRulesetSummaries[RULESET_COUNT] = {
-    "Competitive standard: Quicksave (F5) and Quickload (F9) are STRICTLY FORBIDDEN and blocked by mod proxy. Cheats & teleports blocked. Allowed: FOV adjustment, View Bobbing toggle, Language, Checkpoint Reload.",
-    "Glitched runs: Quicksave and Quickload permitted. Mission replay warp glitch, geometry clipping, and out-of-bounds skips permitted."
+    "Speedrun.com Restricted: Quicksaves (F5) and Quickloads (F9) are STRICTLY FORBIDDEN and blocked by mod proxy. Cheats & teleports blocked. Allowed: Warps, skips without saves, FOV, View Bobbing toggle, Language, Checkpoint Reload.",
+    "Speedrun.com Unrestricted: Quicksaves (F5), quickloads (F9), mission replay warps, and geometry skips permitted. Prohibited: infinite stamina (g_infiniteStamina 1) and godmode/cheats."
 };
 
-// Difficulties (g_skill)
+// Difficulties (speedrun.com subcategories: Easy / Uber)
 enum DifficultyId {
-    DIFF_CASUAL,   // 0
-    DIFF_NORMAL,   // 1
-    DIFF_HARD,     // 2
-    DIFF_UBER,     // 3
+    DIFF_CASUAL,   // 0: Easy
+    DIFF_NORMAL,   // 1: Normal
+    DIFF_HARD,     // 2: Hard
+    DIFF_UBER,     // 3: Über (Leaderboard standard)
     DIFF_COUNT
 };
-const char* kDifficultyNames[DIFF_COUNT] = { "Casual (Easy)", "Normal (Medium)", "Hard", "Über (Competitive Standard)" };
-const char* kDifficultyShortNames[DIFF_COUNT] = { "Casual", "Normal", "Hard", "Über" };
+const char* kDifficultyNames[DIFF_COUNT] = { "Easy (Casual)", "Normal (Medium)", "Hard", "Über (Leaderboard Standard)" };
+const char* kDifficultyShortNames[DIFF_COUNT] = { "Easy", "Normal", "Hard", "Über" };
 
 struct Settings {
     Widget w[W_COUNT];
@@ -177,25 +180,40 @@ struct Settings {
     std::string cheatCmds, teleportCmd;
 };
 
-const int kMissionCount = 12;
+const int kMissionCount = 18;
 const char* kMissionIds[kMissionCount] = {
-    "trainyard", "downtown", "tavern", "digsite", "church", "farm",
-    "hospital", "cannery", "castle", "airfield", "zeppelin", "blacksun"
+    "trainyard", "digsite", "church", "farm", "caverns", "hospital",
+    "cannery", "castle", "castle_top", "airfield_west", "airfield_east", "zeppelin",
+    "blacksun", "mtw_ware", "mtw_off", "mte_ss_hq", "mte_para_hq", "downtown_radio"
 };
 const char* kMissionNames[kMissionCount] = {
     "Train Station (Вокзал)",
-    "Downtown (Центр города)",
-    "Tavern (Таверна)",
     "Dig Site (Раскопки)",
     "Church (Церковь)",
     "Farm (Ферма)",
+    "Caverns (Пещеры)",
     "Hospital (Больница)",
     "Cannery (Консервный завод)",
     "Castle (Замок)",
-    "Airfield (Аэродром)",
+    "Castle Top (Вершина замка)",
+    "Airfield West (Аэродром — запад)",
+    "Airfield East (Аэродром — восток)",
     "Zeppelin (Дирижабль)",
-    "Black Sun (Чёрное Солнце)",
+    "Black Sun Dimension (Чёрное Солнце)",
+    "Warehouse (Склад)",
+    "Officer's House (Квартира офицера)",
+    "SS Headquarters (Штаб-квартира СС)",
+    "SS Paranormal Base (База исследований СС)",
+    "Radio Tower (Радиовышка)"
 };
+static bool g_allMissionsDone[kMissionCount] = { false };
+
+static int GetAllMissionsCompletedCount() {
+    int count = 0;
+    for (int i = 0; i < kMissionCount; i++) if (g_allMissionsDone[i]) count++;
+    return count;
+}
+
 
 const char* kLanguages[] = { "english", "russian", "french", "german", "italian", "spanish", "polish" };
 const int kLangCount = 7;
@@ -340,6 +358,9 @@ static std::string GetFullCategoryDisplay(const Settings& s) {
     for (int i = 0; i < CAT_COUNT; i++) {
         if (s.category == kCategoryKeys[i]) { catName = kCategoryNames[i]; break; }
     }
+    if (s.category == "all_missions") {
+        catName = "All Missions (" + std::to_string(GetAllMissionsCompletedCount()) + "/" + std::to_string(kMissionCount) + ")";
+    }
     if (s.category == "il") {
         std::string mName = s.startMap;
         for (int i = 0; i < kMissionCount; i++) {
@@ -396,6 +417,22 @@ static void WritePbSplits(const std::string& catKey, const std::vector<Split>& v
 }
 
 static void Message(const std::string& m) { g_msg = m; g_msgUntil = GetTickCount() + 2500; }
+
+static void CheckAllMissionComplete(const std::string& mapName) {
+    for (int i = 0; i < kMissionCount; i++) {
+        if (mapName == kMissionIds[i] || mapName.find(kMissionIds[i]) != std::string::npos) {
+            if (!g_allMissionsDone[i]) {
+                g_allMissionsDone[i] = true;
+                int count = 0;
+                for (int j = 0; j < kMissionCount; j++) if (g_allMissionsDone[j]) count++;
+                Log("All Missions progress: %d/%d (%s)", count, kMissionCount, kMissionNames[i]);
+                Message(std::string(kMissionNames[i]) + " (" + std::to_string(count) + "/" + std::to_string(kMissionCount) + ")");
+            }
+            break;
+        }
+    }
+}
+
 
 // ---- Game memory -----------------------------------------------------------------------------
 struct Snapshot { bool loading, paused, mission, cinematic, player; float pos[3], vel[3], hp; char map[64]; };
@@ -500,6 +537,7 @@ static void FinishRun() {
 
 static void StartNewRunFromWizard() {
     g_run.Reset();
+    memset(g_allMissionsDone, 0, sizeof(g_allMissionsDone));
     g_run.practice = false;
     g_maxSpeed = 0;
     std::string catKey = GetPbCategoryKey(g_set);
@@ -700,7 +738,17 @@ static void Poll() {
 
             g_run.SetLoading(s.loading);
             g_run.paused = s.paused;
-            if (s.mission && !wasMission) g_run.MissionComplete();
+            if (s.mission && !wasMission) {
+                CheckAllMissionComplete(g_run.map);
+                bool isFinalLevel = (g_run.map == "blacksun" || g_run.map.find("blacksun") != std::string::npos);
+                bool allMissionsFinished = (g_set.category == "all_missions" && GetAllMissionsCompletedCount() >= kMissionCount);
+                if (g_run.state == Run::Running && (isFinalLevel || allMissionsFinished || g_set.category == "il")) {
+                    FinishRun();
+                    if (allMissionsFinished) Message("ALL 18 MISSIONS COMPLETE! Run finished!");
+                } else {
+                    g_run.MissionComplete();
+                }
+            }
             if (s.paused != wasPaused)
                 Log("pause=%d (cinematic=%d mission=%d bink=%ld) map=%s", s.paused, s.cinematic, s.mission, g_binkOpen, s.map);
             wasMission = s.mission; wasPaused = s.paused;
@@ -714,6 +762,7 @@ static void Poll() {
                 std::string done; double t;
                 std::string catKey = GetPbCategoryKey(g_set);
                 if (g_run.MapLoaded(s.map, &done, &t)) {
+                    CheckAllMissionComplete(done);
                     double pb = ReadPb(catKey, done);
                     if (pb < 0 || t < pb) {
                         char v[32]; snprintf(v, sizeof v, "%.3f", t);
@@ -766,11 +815,12 @@ static void Poll() {
                         if (g_run.state == Run::Running) FinishRun();
                         else {
                             g_run.Start();
+                            memset(g_allMissionsDone, 0, sizeof(g_allMissionsDone));
                             g_pbSplits = ReadPbSplits(GetPbCategoryKey(g_set));
                             Message("Run started (" + GetFullCategoryDisplay(g_set) + ")");
                         }
                         break;
-                    case K_RESET: g_run.Reset(); g_maxSpeed = 0; Message("Reset"); break;
+                    case K_RESET: g_run.Reset(); memset(g_allMissionsDone, 0, sizeof(g_allMissionsDone)); g_maxSpeed = 0; Message("Reset"); break;
                     case K_CATEGORY: {
                         int curIdx = 0;
                         for (int i = 0; i < CAT_COUNT; i++) {
@@ -1000,6 +1050,9 @@ static void DrawNewRunWizard(IDirect3DDevice9* dev) {
         ImGui::BeginChild("CategoryDesc", ImVec2(0, 68), true);
         ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.9f, 1.0f), "Goal: %s", kCategorySummaries[currentCatIdx]);
         ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "Timing: %s", kCategoryTimingRules[currentCatIdx]);
+        if (g_set.category == "all_missions") {
+            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f), "[!] All Missions has 0 runs on speedrun.com! All 18 missions tracked automatically.");
+        }
         ImGui::EndChild();
 
         if (g_set.category == "il") {
@@ -1017,15 +1070,15 @@ static void DrawNewRunWizard(IDirect3DDevice9* dev) {
         ImGui::Spacing();
 
         // STEP 2: RULESET SELECTION
-        ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "STEP 2: Ruleset (Рестрикт / Без ограничений)");
-        if (ImGui::RadioButton("Restricted (No Quicksave / Glitchless)", g_set.ruleset == RULESET_RESTRICTED)) {
+        ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "STEP 2: Ruleset (speedrun.com 'Edits in config')");
+        if (ImGui::RadioButton("Restricted (No wolf.cfg edits / Quicksaves blocked)", g_set.ruleset == RULESET_RESTRICTED)) {
             g_set.ruleset = RULESET_RESTRICTED; SaveSettings(g_set);
             std::string catKey = GetPbCategoryKey(g_set);
             g_pb = ReadPb(catKey, g_run.map);
             g_pbSplits = ReadPbSplits(catKey);
         }
         ImGui::SameLine();
-        if (ImGui::RadioButton("Unrestricted (All Skips & Quicksaves Allowed)", g_set.ruleset == RULESET_UNRESTRICTED)) {
+        if (ImGui::RadioButton("Unrestricted (Quicksaves & Skips Allowed)", g_set.ruleset == RULESET_UNRESTRICTED)) {
             g_set.ruleset = RULESET_UNRESTRICTED; SaveSettings(g_set);
             std::string catKey = GetPbCategoryKey(g_set);
             g_pb = ReadPb(catKey, g_run.map);
@@ -1033,14 +1086,15 @@ static void DrawNewRunWizard(IDirect3DDevice9* dev) {
         }
 
         // Ruleset enforcement banner
-        ImGui::BeginChild("RulesetDesc", ImVec2(0, 65), true);
+        ImGui::BeginChild("RulesetDesc", ImVec2(0, 70), true);
         if (g_set.ruleset == RULESET_RESTRICTED) {
-            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "[!] RESTRICTED ENFORCEMENT ACTIVE:");
-            ImGui::TextWrapped("Quicksaves (F5) and Quickloads (F9) are BLOCKED by the mod proxy.");
-            ImGui::TextDisabled("Warps and developer cheats are prohibited. FOV, head bobbing, and checkpoint reloads are permitted.");
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "[!] RESTRICTED (speedrun.com): Quicksaves & Quickloads are BLOCKED.");
+            ImGui::TextWrapped("Forbidden: console commands, wolf.cfg edits, infinite stamina cheat, in-game FPS glitch binds.");
+            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "ALLOWED: Warps (mission replay trick), skips without saves, FOV, Show FPS, Unlock FPS.");
         } else {
-            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "[*] UNRESTRICTED RULES ACTIVE:");
-            ImGui::TextWrapped("Quicksaves (F5) & Quickloads (F9) are allowed. Mission replay warp glitch, geometry clips and out-of-bounds skips permitted.");
+            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "[*] UNRESTRICTED (speedrun.com):");
+            ImGui::TextWrapped("Allowed: quicksaves (F5), quickloads (F9), mission replay warps, geometry clips and skips.");
+            ImGui::TextDisabled("Forbidden: g_infiniteStamina 1 and console cheats (send run to Cheat%), in-game FPS binds.");
         }
         ImGui::EndChild();
 
@@ -1050,13 +1104,27 @@ static void DrawNewRunWizard(IDirect3DDevice9* dev) {
 
         // STEP 3: DIFFICULTY SELECTION
         ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "STEP 3: Difficulty (Сложность g_skill)");
-        for (int i = 0; i < DIFF_COUNT; i++) {
-            if (ImGui::RadioButton(kDifficultyNames[i], g_set.difficulty == i)) {
-                g_set.difficulty = i; SaveSettings(g_set);
+        if (g_set.category == "100") {
+            if (g_set.difficulty != DIFF_CASUAL && g_set.difficulty != DIFF_COUNT) {
+                g_set.difficulty = DIFF_CASUAL;
             }
-            if (i < DIFF_COUNT - 1) ImGui::SameLine();
+            if (ImGui::RadioButton("Easy (speedrun.com Leaderboard)", g_set.difficulty == DIFF_CASUAL)) {
+                g_set.difficulty = DIFF_CASUAL; SaveSettings(g_set);
+            }
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Cheat (Special Cheat Mod)", g_set.difficulty == DIFF_COUNT)) {
+                g_set.difficulty = DIFF_COUNT; SaveSettings(g_set);
+            }
+            ImGui::TextDisabled("Note: speedrun.com 100%% leaderboard only features Easy and Cheat subcategories (no Uber).");
+        } else {
+            for (int i = 0; i < DIFF_COUNT; i++) {
+                if (ImGui::RadioButton(kDifficultyNames[i], g_set.difficulty == i)) {
+                    g_set.difficulty = i; SaveSettings(g_set);
+                }
+                if (i < DIFF_COUNT - 1) ImGui::SameLine();
+            }
+            ImGui::TextDisabled("Competitive community standard on speedrun.com is Easy or Uber difficulty.");
         }
-        ImGui::TextDisabled("Competitive community standard for Any%% runs is Über difficulty (g_skill 3).");
 
         ImGui::Spacing();
         ImGui::Separator();
@@ -1340,9 +1408,9 @@ static void DrawInGameMenu(IDirect3DDevice9* dev) {
                     g_pb = ReadPb(catKey, g_run.map); g_pbSplits = ReadPbSplits(catKey);
                 }
                 if (g_set.ruleset == RULESET_RESTRICTED) {
-                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "[!] RESTRICTED: Quicksaves & Quickloads are BLOCKED. Cheats/warps forbidden.");
+                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "[!] RESTRICTED: Quicksaves & Quickloads are BLOCKED. Warps (mission replay) are ALLOWED. Cheats forbidden.");
                 } else {
-                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "[*] UNRESTRICTED: Quicksaves, quickloads, mission replay warps and skips allowed.");
+                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "[*] UNRESTRICTED: Quicksaves, quickloads, mission replay warps and skips allowed. Stamina cheat/cheats forbidden.");
                 }
 
                 ImGui::Spacing();
@@ -1350,11 +1418,25 @@ static void DrawInGameMenu(IDirect3DDevice9* dev) {
                 ImGui::Spacing();
 
                 ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Game Difficulty (g_skill)");
-                for (int i = 0; i < DIFF_COUNT; i++) {
-                    if (ImGui::RadioButton(kDifficultyNames[i], g_set.difficulty == i)) {
-                        g_set.difficulty = i; SaveSettings(g_set);
+                if (g_set.category == "100") {
+                    if (g_set.difficulty != DIFF_CASUAL && g_set.difficulty != DIFF_COUNT) {
+                        g_set.difficulty = DIFF_CASUAL;
                     }
-                    if (i < DIFF_COUNT - 1) ImGui::SameLine();
+                    if (ImGui::RadioButton("Easy (speedrun.com Leaderboard)", g_set.difficulty == DIFF_CASUAL)) {
+                        g_set.difficulty = DIFF_CASUAL; SaveSettings(g_set);
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::RadioButton("Cheat (Cheat Mod)", g_set.difficulty == DIFF_COUNT)) {
+                        g_set.difficulty = DIFF_COUNT; SaveSettings(g_set);
+                    }
+                    ImGui::TextDisabled("speedrun.com 100%% leaderboard only features Easy and Cheat categories (no Uber).");
+                } else {
+                    for (int i = 0; i < DIFF_COUNT; i++) {
+                        if (ImGui::RadioButton(kDifficultyNames[i], g_set.difficulty == i)) {
+                            g_set.difficulty = i; SaveSettings(g_set);
+                        }
+                        if (i < DIFF_COUNT - 1) ImGui::SameLine();
+                    }
                 }
 
                 ImGui::Spacing();
@@ -1403,6 +1485,25 @@ static void DrawInGameMenu(IDirect3DDevice9* dev) {
                 ImGui::Spacing();
                 std::string catKey = GetPbCategoryKey(g_set);
                 ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Best Run Splits - %s", GetFullCategoryDisplay(g_set).c_str());
+
+                if (g_set.category == "all_missions") {
+                    ImGui::Spacing();
+                    int doneCount = GetAllMissionsCompletedCount();
+                    ImGui::TextColored(ImVec4(1.0f, 0.84f, 0.0f, 1.0f), "All Missions Checklist (speedrun.com - %d / %d completed):", doneCount, kMissionCount);
+                    ImGui::BeginChild("AllMissionsChecklist", ImVec2(0, 140), true);
+                    ImGui::Columns(2, "MissionsCols");
+                    for (int i = 0; i < kMissionCount; i++) {
+                        if (g_allMissionsDone[i]) {
+                            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "[X] %s", kMissionNames[i]);
+                        } else {
+                            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "[ ] %s", kMissionNames[i]);
+                        }
+                        if (i == (kMissionCount / 2) - 1) ImGui::NextColumn();
+                    }
+                    ImGui::Columns(1);
+                    ImGui::EndChild();
+                    ImGui::Spacing();
+                }
                 if (g_pbSplits.empty()) {
                     ImGui::TextDisabled("No completed run saved in srmod_pb.ini for this category/ruleset yet.");
                 } else {
@@ -1678,6 +1779,7 @@ extern "C" void* __stdcall SrBinkOpen(const char* file, unsigned flags) {
                 Log("WARP PROTECTION: suppressed cutscene timer reset during active run (map=%s)", g_run.map.c_str());
             } else if (g_set.autoStartCutscene) {
                 g_run.Start();
+                memset(g_allMissionsDone, 0, sizeof(g_allMissionsDone));
                 g_run.mapClean = true;
                 g_pbSplits = ReadPbSplits(GetPbCategoryKey(g_set));
                 Message("Run started (" + GetFullCategoryDisplay(g_set) + ")");
