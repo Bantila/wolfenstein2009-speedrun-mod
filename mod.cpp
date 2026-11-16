@@ -243,6 +243,10 @@ static void DrawNewRunWizard(IDirect3DDevice9* dev);
 static const char* GetKeyDisplayName(int vk);
 static bool ToggleSwitch(const char* label, bool* v, const char* hint = nullptr);
 
+typedef HRESULT(__stdcall* Present_t)(IDirect3DDevice9*, const RECT*, const RECT*, HWND, const RGNDATA*);
+static Present_t oPresent = nullptr;
+static void HookDeviceVtable(IDirect3DDevice9* dev, HWND hwnd);
+
 // ---- Globals ---------------------------------------------------------------------------------
 static char g_dir[MAX_PATH];
 static char g_ini[MAX_PATH];
@@ -407,18 +411,13 @@ struct Snapshot { bool loading, paused, mission, cinematic, player; float pos[3]
 static BYTE* g_session = nullptr;
 
 static BYTE* FindSession() {
-    BYTE* exe = (BYTE*)GetModuleHandleA(nullptr);
-    if (!exe) return nullptr;
     __try {
-        auto nt = (IMAGE_NT_HEADERS*)(exe + ((IMAGE_DOS_HEADER*)exe)->e_lfanew);
-        auto sec = IMAGE_FIRST_SECTION(nt);
-        for (int i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++) {
-            if (memcmp(sec->Name, ".data", 5) != 0) continue;
-            DWORD* p = (DWORD*)(exe + sec->VirtualAddress);
-            DWORD n = sec->Misc.VirtualSize / 4;
-            for (DWORD k = 0; k < n; k++) {
-                if (p[k] == WOLF_SESSION_VT) return (BYTE*)&p[k];
-            }
+        BYTE** pSess = (BYTE**)0x1070a000;
+        if (pSess && *pSess) return *pSess;
+        BYTE* gx = (BYTE*)GetModuleHandleA("Gamex86.dll");
+        if (gx) {
+            BYTE** pSessGx = (BYTE**)(gx + 0x61f074);
+            if (pSessGx && *pSessGx) return *pSessGx;
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
     return nullptr;
@@ -444,7 +443,8 @@ static void ReadGame(Snapshot* s, bool writeGod) {
         if (g_session) s->loading = g_session[SESS_INSIDE_MAPCHANGE] != 0;
         BYTE* gx = (BYTE*)GetModuleHandleA("Gamex86.dll");
         s->paused = g_binkOpen > 0;
-        if (!gx || !g_supported) return;
+        if (!gx || !g_supported || s->loading) return; // Completely shield game state during loading!
+
         s->cinematic = gx[RVA_GAMELOCAL + GL_INCINEMATIC] != 0;
         BYTE* mc = *(BYTE**)(gx + RVA_MISSIONCOMPLETE);
         if (mc) s->mission = mc[MC_ACTIVE] != 0;
@@ -464,21 +464,21 @@ static void ReadGame(Snapshot* s, bool writeGod) {
         if (writeGod) *(BYTE*)(pl + PL_GODMODE) = 1;
         BYTE* ph = *(BYTE**)(pl + PL_PHYSICS);
         if (!ph) return;
-        typedef float*(__thiscall * Phys_t)(void*);
-        void** vt = *(void***)ph;
-        if ((DWORD)vt[1] == (DWORD)(gx + RVA_PHYS_GETORIGIN)) {
-            memcpy(s->pos, (float*)vt[1], 12);
-        } else {
-            float* o = ((Phys_t)vt[1])(ph);
-            if (o) memcpy(s->pos, o, 12);
-        }
+
+        // Pure memory read without calling virtual functions on background threads
+        float* o = (float*)(ph + PH_ORIGIN);
+        memcpy(s->pos, o, 12);
         float* v = *(float**)(ph + PH_VELOCITY);
         if (v) memcpy(s->vel, v, 12);
         else memcpy(s->vel, ph + PH_VELOCITY, 12);
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
-static void ExecCommand(const std::string& text) {
+static std::mutex g_cmdQueueMx;
+static std::vector<std::string> g_cmdQueue;
+static DWORD g_mainThreadId = 0;
+
+static void RawExecCommand(const std::string& text) {
     __try {
         BYTE* gx = (BYTE*)GetModuleHandleA("Gamex86.dll");
         if (!gx || !g_supported) return;
@@ -487,6 +487,31 @@ static void ExecCommand(const std::string& text) {
         typedef void(__thiscall * Buf_t)(void*, int, const char*);
         ((Buf_t)(*(void***)cs)[CMD_BUFFERTEXT_IDX])(cs, CMD_EXEC_APPEND, text.c_str());
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+static void ExecCommand(const std::string& text) {
+    if (text.empty()) return;
+    if (g_mainThreadId != 0 && GetCurrentThreadId() == g_mainThreadId) {
+        RawExecCommand(text);
+    } else {
+        std::lock_guard<std::mutex> lk(g_cmdQueueMx);
+        g_cmdQueue.push_back(text);
+    }
+}
+
+static void FlushCommandsMainThread() {
+    g_mainThreadId = GetCurrentThreadId();
+    if (g_session && g_session[SESS_INSIDE_MAPCHANGE]) return; // Shield game engine during loading screens
+
+    std::vector<std::string> toExec;
+    {
+        std::lock_guard<std::mutex> lk(g_cmdQueueMx);
+        if (g_cmdQueue.empty()) return;
+        toExec.swap(g_cmdQueue);
+    }
+    for (const auto& cmd : toExec) {
+        RawExecCommand(cmd);
+    }
 }
 
 static void ExecCommandList(const std::string& list) {
@@ -654,6 +679,15 @@ static void Poll() {
             g_session = FindSession();
             if (g_session) Log("Wolf2 Session object found at %p", g_session);
         }
+        // Fallback device detection if IAT was bypassed
+        if (!oPresent) {
+            IDirect3DDevice9* dev = *(IDirect3DDevice9**)0x109d5ab4;
+            if (dev) {
+                HWND hwnd = *(HWND*)0x109ddc30;
+                HookDeviceVtable(dev, hwnd);
+            }
+        }
+
         BYTE* gx = (BYTE*)GetModuleHandleA("Gamex86.dll");
         if (gx && !g_supported) {
             g_supported = CheckGameDll(gx);
@@ -1615,8 +1649,15 @@ static void DrawOverlay(IDirect3DDevice9* dev) {
     dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb);
     if (bb) dev->SetRenderTarget(0, bb);
 
-    D3DSURFACE_DESC desc;
-    bb->GetDesc(&desc);
+    D3DSURFACE_DESC desc = {};
+    if (bb) bb->GetDesc(&desc);
+    else {
+        D3DDISPLAYMODE dm;
+        if (SUCCEEDED(dev->GetDisplayMode(0, &dm))) {
+            desc.Width = dm.Width;
+            desc.Height = dm.Height;
+        }
+    }
 
     // Initialize ImGui on first render
     if (!g_imguiInit) {
@@ -1665,7 +1706,8 @@ static void DrawOverlay(IDirect3DDevice9* dev) {
     IDirect3DStateBlock9* sb = nullptr;
     dev->CreateStateBlock(D3DSBT_ALL, &sb);
 
-    if (SUCCEEDED(dev->BeginScene())) {
+    bool sceneBegun = SUCCEEDED(dev->BeginScene());
+    if (sceneBegun) {
         int W = desc.Width, H = desc.Height;
         const Settings& st = g_set;
 
@@ -1718,84 +1760,54 @@ static void DrawOverlay(IDirect3DDevice9* dev) {
             ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
         }
 
-        dev->EndScene();
+        if (sceneBegun) dev->EndScene();
     }
     if (sb) { sb->Apply(); sb->Release(); }
 
-    dev->SetRenderTarget(0, oldRt);
+    if (oldRt) {
+        dev->SetRenderTarget(0, oldRt);
+        oldRt->Release();
+    }
     dev->SetViewport(&vp);
-    if (oldRt) oldRt->Release();
-    bb->Release();
+    if (bb) bb->Release();
 }
 
 // ---- D3D9 hooks ------------------------------------------------------------------------------
-typedef HRESULT(__stdcall* Present_t)(IDirect3DDevice9*, const RECT*, const RECT*, HWND, const RGNDATA*);
-typedef HRESULT(__stdcall* Reset_t)(IDirect3DDevice9*, D3DPRESENT_PARAMETERS*);
-static Present_t oPresent;
-static Reset_t oReset;
-
 static HRESULT __stdcall hkPresent(IDirect3DDevice9* dev, const RECT* a, const RECT* b, HWND c, const RGNDATA* d) {
+    FlushCommandsMainThread();
     DrawOverlay(dev);
     return oPresent(dev, a, b, c, d);
 }
 
-static HRESULT __stdcall hkReset(IDirect3DDevice9* dev, D3DPRESENT_PARAMETERS* pp) {
-    {
-        std::lock_guard<std::mutex> lk(g_mx);
-        for (auto& f : g_fonts) f.second->OnLostDevice();
-        if (g_imguiInit) ImGui_ImplDX9_InvalidateDeviceObjects();
+static void HookDeviceVtable(IDirect3DDevice9* dev, HWND hwnd) {
+    if (!dev) return;
+    if (hwnd) g_gameHwnd = hwnd;
+    void** vt = *(void***)dev;
+    if (!vt) return;
+
+    if (vt[17] != (void*)hkPresent) {
+        DWORD old;
+        if (VirtualProtect(&vt[17], sizeof(void*), PAGE_READWRITE, &old)) {
+            oPresent = (Present_t)vt[17];
+            vt[17] = (void*)hkPresent;
+            VirtualProtect(&vt[17], sizeof(void*), old, &old);
+            Log("Hooked real HAL Device Present (vt[17]): %p -> %p", oPresent, hkPresent);
+        }
     }
-    HRESULT hr = oReset(dev, pp);
-    std::lock_guard<std::mutex> lk(g_mx);
-    if (SUCCEEDED(hr)) {
-        for (auto& f : g_fonts) f.second->OnResetDevice();
-        if (g_imguiInit) ImGui_ImplDX9_CreateDeviceObjects();
-    } else g_fontsDirty = true;
-    return hr;
-}
 
-static bool Hook(void** vtable, int idx, void* hook, void** orig) {
-    DWORD old;
-    VirtualProtect(&vtable[idx], sizeof(void*), PAGE_READWRITE, &old);
-    *orig = vtable[idx];
-    vtable[idx] = hook;
-    VirtualProtect(&vtable[idx], sizeof(void*), old, &old);
-    Log("hook %d: vtable (%p -> %p)", idx, *orig, hook);
-    return true;
-}
-
-static void InitD3D(IDirect3DDevice9* dev) {
     // Register high-DPI JetBrains Mono into GDI private font table
     AddFontResourceExA("srmod_font.ttf", FR_PRIVATE, 0);
     AddFontResourceExA("..\\SP\\srmod_font.ttf", FR_PRIVATE, 0);
 
-    HMODULE d3dx = LoadLibraryA("d3dx9_43.dll");
-    if (!d3dx) {
-        char sys[MAX_PATH]; GetSystemDirectoryA(sys, MAX_PATH);
-        char p[MAX_PATH]; snprintf(p, sizeof p, "%s\\d3dx9_43.dll", sys);
-        d3dx = LoadLibraryA(p);
+    if (!g_createFont) {
+        HMODULE d3dx = LoadLibraryA("d3dx9_43.dll");
+        if (!d3dx) {
+            char sys[MAX_PATH]; GetSystemDirectoryA(sys, MAX_PATH);
+            char p[MAX_PATH]; snprintf(p, sizeof p, "%s\\d3dx9_43.dll", sys);
+            d3dx = LoadLibraryA(p);
+        }
+        if (d3dx) g_createFont = (D3DXCreateFontA_t)GetProcAddress(d3dx, "D3DXCreateFontA");
     }
-    if (d3dx) g_createFont = (D3DXCreateFontA_t)GetProcAddress(d3dx, "D3DXCreateFontA");
-    void** vt = *(void***)dev;
-    Hook(vt, 17, (void*)hkPresent, (void**)&oPresent);
-    Hook(vt, 16, (void*)hkReset,   (void**)&oReset);
-}
-
-static void HookD3D9() {
-    WNDCLASSEXA wc = { sizeof(wc), CS_CLASSDC, DefWindowProcA, 0, 0, GetModuleHandleA(nullptr), nullptr, nullptr, nullptr, nullptr, "SrTmp", nullptr };
-    RegisterClassExA(&wc);
-    HWND h = CreateWindowA("SrTmp", "", WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, nullptr, nullptr, wc.hInstance, nullptr);
-    IDirect3D9* d3d = Direct3DCreate9(D3D_SDK_VERSION);
-    if (!d3d) { DestroyWindow(h); UnregisterClassA("SrTmp", wc.hInstance); return; }
-    D3DPRESENT_PARAMETERS pp = {}; pp.Windowed = TRUE; pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-    IDirect3DDevice9* dev = nullptr;
-    if (SUCCEEDED(d3d->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_NULLREF, h, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &dev))) {
-        InitD3D(dev);
-        dev->Release();
-    }
-    d3d->Release();
-    DestroyWindow(h);
-    UnregisterClassA("SrTmp", wc.hInstance);
 }
 
 // ---- Bink Proxy Export Forwarding ------------------------------------------------------------
@@ -1819,6 +1831,7 @@ extern "C" void* __stdcall SrBinkOpen(const char* file, unsigned flags) {
     if (h) InterlockedIncrement(&g_binkOpen);
 
     if (file) {
+        Log("BinkOpen: %s", file);
         std::string fnLower = file;
         for (char& c : fnLower) c = (char)tolower((unsigned char)c);
         if (fnLower.find("wolf_campaign_start") != std::string::npos) {
@@ -1869,19 +1882,6 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {
         SaveSettings(g_set);
 
         CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
-            for (int i = 0; i < 200; i++) {
-                if (!g_session) g_session = FindSession();
-                HMODULE gx = GetModuleHandleA("Gamex86.dll");
-                if (gx && CheckGameDll((BYTE*)gx)) {
-                    g_supported = true;
-                    Log("Gamex86 verified (%d ms)", i * 50);
-                    ApplyFovAndBob();
-                    break;
-                }
-                Sleep(50);
-            }
-            if (!g_supported) Log("Gamex86 not verified, running in generic mode");
-            HookD3D9();
             Poll();
             return 0;
         }, nullptr, 0, nullptr);

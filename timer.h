@@ -68,8 +68,13 @@ struct Run {
     bool IgtStopped() const { return loading || paused; }
 
     void Tick(double dt) {
-        mapRta += dt;
-        if (!IgtStopped()) mapIgt += dt;
+        if (map != "menu" && !map.empty()) {
+            mapRta += dt;
+            if (!IgtStopped()) mapIgt += dt;
+        } else {
+            mapRta = 0;
+            mapIgt = 0;
+        }
         if (state != Running) return;
         rta += dt;
         if (loading) loadTime += dt;
